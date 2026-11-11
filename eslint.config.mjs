@@ -17,16 +17,33 @@ export default tseslint.config(
     },
   },
   {
-    // Architecture boundary: the core engine must stay platform-independent.
-    files: ['src/core/**/*.ts'],
+    // Architecture boundary: the engine model (runtime, animation math, scene, particles,
+    // sprites, effect descriptions) must stay platform-independent. Only src/renderer/**
+    // and src/react-native/** may touch React, React Native, Reanimated/Worklets or Skia.
+    files: [
+      'src/runtime/**/*.ts',
+      'src/animation/**/*.ts',
+      'src/scene/**/*.ts',
+      'src/particles/**/*.ts',
+      'src/sprites/**/*.ts',
+      'src/effects/**/*.ts',
+    ],
     rules: {
       'no-restricted-imports': [
         'error',
         {
           patterns: [
             {
-              group: ['react', 'react-native', 'react-native-*', '@shopify/*', '*/react/*', '*/renderers/*'],
-              message: 'src/core must not depend on React, React Native or renderer adapters.',
+              group: [
+                'react',
+                'react-native',
+                'react-native-*',
+                '@shopify/*',
+                '**/renderer/**',
+                '**/react-native/**',
+              ],
+              message:
+                'Engine modules must not depend on React, React Native, Skia, Reanimated or host/renderer adapters.',
             },
           ],
         },

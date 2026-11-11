@@ -1,93 +1,102 @@
-# Architecture (proposal, Phase 1)
+# Architecture
 
-This is the plan the later phases build against. Nothing below except the toolchain exists in code yet. Sections marked **Decision needed** are listed in [PROGRESS.md](PROGRESS.md).
+Status: **Phase 0 proposal.** Only the toolchain and the lint boundary below exist in code. Everything else is the target the next phases build and prove. Decisions still open are listed in [PROGRESS.md](PROGRESS.md#pending-decisions).
 
-## Goals that shape the design
+## What the product is
 
-1. **Game state and presentation are separate.** The game (server-authoritative) emits events. The SDK only *visualizes* them. No game action ever waits for, or depends on, an animation finishing.
-2. **Deterministic core.** Every animation is a pure function of time. Given the same spec and the same timestamp, it returns the same values. This makes it testable with a virtual clock and lets the UI thread evaluate it without the JS thread.
-3. **Renderer independence.** Card motion uses Reanimated transforms; particles and custom drawing use Skia. Neither leaks into the core or the public API.
-4. **Resolution independence.** Specs use logical coordinates. Conversion to pixels and safe areas happens in one place.
+An embeddable **2D game-effects engine** for existing React Native apps. A host app mounts one transparent overlay and triggers effects (particle bursts, sprites, confetti, explosions, card or image movement) through a typed API. The engine owns its own runtime, scene model, scheduling, effect composition and resource lifecycle. Skia and Reanimated/Worklets are infrastructure underneath, not the product. Game rules and app state stay in the host app.
+
+Not in scope: physics, networking, gameplay rules, editors, 3D, audio, ECS, custom native renderers (see CLAUDE.md "Explicitly deferred").
 
 ## Module boundaries
 
-The SDK starts as **one npm package with internal modules** (and subpath exports later). Splitting into several packages is only worth it once a second consumer needs to install the core without React Native. Dependencies point downwards only:
+One package to start, with internal modules. Arrows point to what a module may import.
 
 ```
-src/react          Provider, hooks, components, reduced-motion, feature flags
-   |    \
-   |   src/integration   event queue, dedupe, interrupt/skip/snap-to-final reconciliation
-   |    /
-src/renderers/reanimated   src/renderers/skia     (adapters; the only code that imports them)
-   |                           |
-src/cards  src/effects   presets that produce plain-data specs (deal, fan, flip, sparks, ...)
-   |          |
-src/layout   logical coordinate space -> pixels, safe areas, responsive anchors
-   |
-src/core     clock, easing, cubic Bezier, interpolation, keyframes, timeline, composition, seeded RNG
+            src/react-native  (Provider, Canvas, hooks, anchoring, safe areas, reduced motion)
+               |         \
+               |          src/renderer/skia   (draws a scene snapshot; owns native graphics resources)
+               |         /
+   src/effects (typed registry, presets, parameter validation)
+        |            \
+   src/particles   src/sprites   (emitters, lifetimes, atlases, frame playback)
+        |            /
+   src/scene  (nodes, parent/child transforms, layers, draw order, opacity, bounds, coordinate transforms)
+        |
+   src/animation (timelines, keyframes, easing, interpolation, motion paths, sequence/parallel/stagger)
+        |
+   src/runtime   (clock, scheduler, update loop, effect handles + state machine, cancel/pause/resume/repeat/seek, seeded RNG)
 ```
 
-| Module | Depends on | May import React / RN? | Phase |
-| --- | --- | --- | --- |
-| `core` | nothing | **No** (enforced by ESLint `no-restricted-imports`) | 2 |
-| `layout` | `core` | No | 2/3 |
-| `cards` | `core`, `layout` | No | 3 |
-| `effects` | `core`, `layout` | No (simulation only; drawing is in the Skia adapter) | 4 |
-| `renderers/reanimated` | `core` | Yes (Reanimated, Worklets) | 3 |
-| `renderers/skia` | `core`, `effects` | Yes (Skia) | 4 |
-| `integration` | `core` | No | 3/5 |
-| `react` | all of the above | Yes | 3 |
+| Module | Pure TS, no React/RN/Skia? | First needed in |
+| --- | --- | --- |
+| `runtime` | Yes | Phase 1 (minimal), Phase 2 (full) |
+| `animation` | Yes | Phase 2 |
+| `scene` | Yes | Phase 2 |
+| `particles` | Yes (simulation only) | Phase 1 (one burst), Phase 3 |
+| `sprites` | Yes (frame math, atlas metadata) | Phase 3 |
+| `effects` | Yes | Phase 1 (one preset), Phase 4 |
+| `renderer/skia` | No: the only module importing `@shopify/react-native-skia` | Phase 1 |
+| `react-native` | No: host integration | Phase 1 |
 
-Belote-specific glue (mapping "player 2 played the ace of spades" to `moveCard`) lives in the **game app**, not in this SDK.
+The "pure" column is **enforced** by an ESLint `no-restricted-imports` rule in `eslint.config.mjs`. It rejects imports of `react`, `react-native`, `react-native-*`, `@shopify/*` and of the `renderer/` and `react-native/` folders from the six engine modules.
 
-## Animation specs and handles
+Belote Tunisienne, or any other game, is an external consumer. Card-specific presets and the mapping from game events to effects live in that consumer, or in an optional adapter in Phase 6.
 
-- Builders such as `moveCard(...)`, `sequence([...])`, `parallel([...])`, `stagger(...)` return an **inert, serializable spec** (plain objects and numbers). Plain data is required because Reanimated worklets can only capture serializable values, and it makes specs easy to snapshot in tests.
-- `play()` turns a spec into a **handle**: `pause()`, `resume()`, `seek(ms)`, `cancel()`, `finish()` (jump to the end state), plus `finished: Promise<AnimationResult>`.
-- `finished` **resolves** with `{ status: 'completed' | 'cancelled' | 'finished-early' }` and never rejects for cancellation, so callers cannot create unhandled rejections by skipping animations. Invalid configuration throws synchronously when the spec is built. **Decision needed:** confirm this shape.
-- Zero duration is valid and completes on the next tick. Negative or non-finite durations, delays and repeat counts are rejected.
+## Thread model (to be proven in Phase 1)
 
-## Clocks
+The decision is **not final** until the Phase 1 vertical slice runs on a device.
 
-- `Clock` is an injected interface: `now()` and `subscribe(onFrame)`.
-- `VirtualClock` (tests): advanced manually with `advance(ms)`. All core tests use it; no real-time sleeps.
-- `FrameClock` (runtime): driven by `requestAnimationFrame` on JS, or by Reanimated's frame callback on the UI thread.
-- A timeline samples `t = clock.now() - startTime - pausedDuration`, clamps to `[0, duration]`, and evaluates. It never accumulates per-frame deltas, so dropped frames don't cause drift.
-- Randomness (shuffle jitter, particle spread) comes from an injected **seeded RNG**, so effects are reproducible in tests.
+**Proposal:** per-frame simulation runs on the **UI thread** inside a Reanimated `useFrameCallback`. Results go into shared values that Skia reads directly. Particles are drawn as a single Skia `Atlas` (one draw call with per-particle transforms). React does not re-render per frame. The JS thread only starts, cancels and disposes effects.
 
-## Rendering adapters
+- This requires the simulation functions to be **worklet-compatible**: plain functions over numbers and arrays that carry a `'worklet'` directive. The directive is only a string literal, so the engine modules stay importable and testable in Node without any React Native dependency.
+- Arbitrary TypeScript (closures over classes, Maps, Promises) does **not** run on the UI thread. The engine therefore separates *descriptions and handles* (JS thread) from *per-frame math* (worklets).
+- **Fallback** if the UI-thread approach fails on device: run the simulation on the JS thread with `requestAnimationFrame` and push snapshots to Skia through shared values. It is simpler, but it competes with the app's JS work.
 
-- **Reanimated adapter:** binds a spec to `SharedValue`s (`translateX`, `translateY`, `rotate`, `scale`, `opacity`, and a `zIndex`/order channel for stacking). The spec is evaluated in a worklet, so no React state updates happen per frame.
-- **Skia adapter:** draws particle systems and glows in a single `<Canvas>` overlay. Particles live in a fixed-size pool with bounded lifetimes; the pool is released on unmount.
-- Sprite sheets or Rive are **not** planned until a concrete effect needs them.
+## Runtime concepts
 
-## Lifecycle and cleanup
+- **Clock**: injected interface (`now()`, frame subscription). `VirtualClock` for tests (advanced manually, no real sleeps). Frame clock adapter on device.
+- **Time sampling**: effects evaluate `t = now - start - pausedTime`, clamped to the effect's duration. They do not accumulate per-frame deltas, so large frame gaps cannot cause drift. Large deltas are a required test case.
+- **Seeded RNG**: all randomness (emission angles, colors, jitter) comes from an injected, seedable generator. The same seed gives the same particles in tests.
+- **Effect handle**: `fx.play(...)` returns a handle with `pause()`, `resume()`, `cancel()`, `finish()`, `seek(ms)` (where meaningful), `state` and `finished: Promise<{ status: 'completed' | 'cancelled' }>`. `finished` **resolves** on cancel and never rejects for it, so skipped effects cannot cause unhandled rejections. Invalid parameters throw synchronously at `play()`.
+- **States**: `idle -> playing <-> paused -> completed | cancelled -> disposed`. Disposal releases all resources and is idempotent.
 
-- Every handle is owned by an `AnimationScope` (one per mounted provider or screen). Unmounting the scope cancels all handles, unsubscribes from the clock and frees particle pools.
-- Callbacks (`onComplete`, etc.) are guarded so they never fire after their scope has been disposed.
-- Navigation away or app backgrounding cancels or fast-forwards running animations, depending on configuration.
+## Scene model (Phase 2, kept minimal)
 
-## Reconciling with authoritative game events
+Nodes with a local transform (translate, rotate, scale, opacity), children, a layer and a z-order. World transforms are computed by pure functions. Renderers consume a **flat, sorted draw list** produced from the scene, never the scene graph itself. This keeps Skia out of the model and makes a second renderer possible later.
 
-The integration layer receives game events with a stable id and sequence number.
+## Coordinate spaces
 
-- **Duplicates** (same id) are ignored.
-- **Out-of-order** events with a lower sequence than the last applied one are ignored.
-- **Interruption:** when a new event arrives while an older animation is running, the older one is `finish()`ed (snapped to its end state) before the new one starts, unless they are declared as compatible to run in parallel.
-- **Reconnect / resync:** the game supplies a full state snapshot; the SDK cancels everything and renders the snapshot without animation.
-- **Reduced motion / animations disabled:** specs are evaluated directly at their end state.
-
-In every case the visual end state equals the authoritative state. The game never reads animation state back.
-
-## Coordinates and layout
-
-Specs use a logical scene space (for example a 1000 x 1000 table, or anchors such as `seat:south`). `layout` maps logical points to pixels from the measured container and safe-area insets, and re-runs on resize or rotation. Card sizes are expressed relative to the scene, not in pixels.
-
-## Testing strategy
-
-| Layer | How it is tested |
+| Space | Meaning |
 | --- | --- |
-| `core`, `layout`, `cards`, `effects` simulation | Jest unit tests with `VirtualClock` and seeded RNG; exact values at fixed timestamps |
-| `integration` | Jest tests for duplicates, out-of-order events, interruption, reconnect |
-| Renderer adapters and `react` | Jest with the React Native preset and the Reanimated/Skia test mocks (Phase 3+) |
-| Visual output and performance | Demo app on real devices or emulators; only measured results are reported |
+| Canvas | Default. Density-independent points relative to the overlay's top-left corner, matching React Native layout units |
+| Window | Values from `measureInWindow` or touch events. Converted to canvas space by subtracting the overlay's window offset |
+| Target-relative | An effect anchored to a host view (`ref`). The host view is measured and converted to canvas space. Re-measure on layout, scroll or rotation |
+
+Safe-area insets are exposed to effects as data. They are not applied silently, because a full-screen celebration may intentionally draw under the notch. Every public API that accepts a position states which space it uses.
+
+## Host integration
+
+- `<GameFXProvider>` owns the runtime, registry and lifecycle scope for its subtree.
+- `<GameFXCanvas>` is an absolutely positioned, transparent Skia canvas with `pointerEvents="none"` by default, so it never blocks the host app's touches. Interactive modes are opt-in.
+- `useGameFX()` returns the typed API (`play`, `register`, `cancelAll`).
+- Unmounting the provider cancels and disposes every effect, stops frame callbacks and releases images and atlases. No effect callback fires after unmount.
+- Reduced motion (`AccessibilityInfo`) and a quality setting are provider options that presets must honor.
+
+## Effects and extensibility
+
+- A typed **registry** maps preset names to definitions. `fx.play('confetti', params)` is type-checked against that preset's parameter type.
+- Consumers register custom presets through the same public API that built-in presets use. They never modify engine internals.
+- Parameters are validated at `play()` time with clear error messages.
+
+## Packaging and consumer contract
+
+- Native libraries (`react`, `react-native`, `@shopify/react-native-skia`, `react-native-reanimated`, `react-native-worklets`) become **peer dependencies**. The SDK does not bundle them.
+- Version baseline proposed from Expo SDK 58 (current on 2026-11-11): React Native 0.88.1, React 19.3.0, Reanimated 4.7.1, Worklets 0.13.0, Skia 2.14.0. Reanimated 4 requires the New Architecture.
+- A **separate example app** (`example/`) consumes the SDK only through its built public entry point. CI also packs the SDK with `npm pack` and type-checks the example against the tarball, so private paths cannot leak into the contract.
+
+## What carries over from the earlier card-SDK design
+
+Kept as-is: strict TypeScript, Jest, ESLint and the CI toolchain; the virtual clock and seeded RNG; time sampling without drift; handles whose promise resolves on cancel; lifecycle scopes with cleanup on unmount; logical coordinates; game state staying outside the SDK.
+
+Changed: Skia is now the primary renderer instead of Reanimated view transforms. The engine gets its own scene model and effect registry. Card presets are no longer core (they become a later demo preset or consumer code). Game-event reconciliation (duplicates, reconnects) moves to the optional Belote adapter.
