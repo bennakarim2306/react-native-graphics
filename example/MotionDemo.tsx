@@ -22,6 +22,8 @@ interface DemoScene {
   readonly group: SceneNode;
   readonly card: SceneNode;
   readonly floorY: number;
+  /** Card x positions on the left and right side of the stage. */
+  readonly lanes: readonly [number, number];
   readonly loops: Playback[];
 }
 
@@ -92,15 +94,16 @@ function buildScene(engine: Engine, stage: Stage): DemoScene {
     y: floorY + 2,
     shape: { type: 'rect', width: stage.width - 24, height: 4, color: '#4B437A', cornerRadius: 2 },
   });
+  const lanes = [70, stage.width - 70] as const;
   const card = scene.createNode({
     parent: group,
     name: 'card',
-    x: stage.width / 2,
+    x: lanes[0],
     y: floorY - CARD_HEIGHT / 2,
     zIndex: 10,
     shape: { type: 'rect', width: 44, height: CARD_HEIGHT, color: '#F5F0FF', cornerRadius: 6 },
   });
-  return { group, card, floorY, loops };
+  return { group, card, floorY, lanes, loops };
 }
 
 export function MotionDemo() {
@@ -149,13 +152,18 @@ export function MotionDemo() {
     const current = demo.current;
     if (!engine || !current) return;
     throwPlayback.current?.cancel();
-    const { card, floorY } = current;
+    const { card, floorY, lanes } = current;
     const restY = floorY - CARD_HEIGHT / 2;
+    // Throw to the other side, so rewinding (back to the start) and skipping (to the
+    // landing spot) end in visibly different places.
+    const targetX = card.x < (lanes[0] + lanes[1]) / 2 ? lanes[1] : lanes[0];
     const timeline = engine
       .timeline()
       // Rise and spin, then fall: two sequential stages with parallel properties.
       .add(engine.animate(card, { y: restY - 230, rotation: uprightAfterSpin(card.rotation), duration: 520, easing: 'easeOutQuad' }))
       .add(engine.animate(card, { y: restY, duration: 560, easing: 'easeInQuad' }))
+      // Sideways motion across both stages, in parallel from time 0.
+      .add(engine.animate(card, { x: targetX, duration: 1080 }), 0)
       // The impact is defined as the end of the fall: exactly when the card touches the floor.
       .mark('impact')
       .add(
@@ -191,6 +199,17 @@ export function MotionDemo() {
     });
   };
 
+  /** Rewind (`stop`: back to where the throw started) or skip (`finish`: jump to the landing). */
+  const controlThrow = (action: 'rewind' | 'skip') => {
+    const playback = throwPlayback.current;
+    if (!playback || (playback.status !== 'playing' && playback.status !== 'paused')) {
+      addLog(`${action}: no throw in progress (press it while the card is in the air)`);
+      return;
+    }
+    if (action === 'rewind') playback.stop();
+    else playback.finish();
+  };
+
   const button = (label: string, onPress: () => void, style?: object) => (
     <Pressable key={label} style={({ pressed }) => [styles.button, style, pressed && styles.pressed]} onPress={onPress}>
       <Text style={styles.buttonText}>{label}</Text>
@@ -207,8 +226,12 @@ export function MotionDemo() {
         {button('Cancel throw', () => throwPlayback.current?.cancel(), styles.danger)}
       </View>
       <View style={styles.row}>
-        {button('Rewind throw', () => throwPlayback.current?.stop())}
-        {button('Skip to end', () => throwPlayback.current?.finish())}
+        {button('Rewind throw', () => {
+          controlThrow('rewind');
+        })}
+        {button('Skip to end', () => {
+          controlThrow('skip');
+        })}
         {button(paused ? 'Resume all' : 'Pause all', () => {
           if (!engine) return;
           if (paused) engine.resume();
