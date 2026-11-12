@@ -1,0 +1,37 @@
+{
+  "name": "react-native-graphics",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Game-agnostic 2D animation SDK for React Native games (timelines, card presets, effects).",
+  "license": "UNLICENSED",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "src"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.13",
+    "@babel/preset-env": "^7.29.7",
+    "@babel/preset-typescript": "^7.29.7",
+    "@eslint/js": "^10.0.1",
+    "@types/jest": "^30.0.0",
+    "babel-jest": "^30.5.2",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
+    "jest": "^30.5.2",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.72.2"
+  }
+}
