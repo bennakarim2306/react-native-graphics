@@ -71,9 +71,8 @@ Positions are in points relative to the overlay's top-left corner. If the overla
 
 ```sh
 npm ci
-npm run example:pack          # build + pack into example/vendor/
+npm run example:install       # build, pack into example/vendor/, install it in example/
 cd example
-npm install
 npx expo start                # then open on a device, emulator or simulator
 npm run export:web && npx serve dist-web   # optional web preview
 ```

@@ -42,7 +42,7 @@ All Phase 1 completion criteria are met **except native confirmation**. Nothing 
 | `npm run lint` | Pass (includes the engine-module boundary rule) |
 | `npm test` | **Pass: 9 suites, 60 tests** in 3 Jest projects: `core` (Node: clocks, RNG, emitter, particle simulation, engine, params, entry points), `renderer` (real Skia via CanvasKit, pixel read-back), `react-native` (RN Jest preset + Testing Library: provider, overlay, hook, StrictMode, unmount cleanup) |
 | `npm run build` | Pass (`lib/` ESM + `.d.ts`) |
-| `npm run example:pack` then `npm install` in `example/` | Pass, SDK installed from the tarball |
+| `npm run example:install` (pack, then install the tarball by path in `example/`) | Pass, SDK installed from the tarball |
 | `cd example && npx tsc --noEmit` | Pass against the tarball's `.d.ts` |
 | `cd example && CI=1 EXPO_OFFLINE=1 npx expo export --platform android` | Pass: Hermes bundle, 1221 modules |
 | `cd example && CI=1 EXPO_OFFLINE=1 npx expo export --platform ios` | Pass: Hermes bundle |
@@ -77,7 +77,7 @@ Changed: `package.json` (exports, peer and dev dependencies, scripts), `package-
 
 ### Pending decisions
 
-1. **Device run (needed to close Phase 1).** The quickest path is Expo Go on your phone. SDK 58's Expo Go includes Skia and Reanimated, but this hasn't been verified. Clone the branch, run `npm ci && npm run example:pack && cd example && npm install && npx expo start`, and scan the QR code. Alternatively, if Android Studio and an emulator are on your PC, I can drive the build there.
+1. **Device run (needed to close Phase 1).** The quickest path is Expo Go on your phone. SDK 58's Expo Go includes Skia and Reanimated, but this hasn't been verified. Clone the branch, run `npm ci && npm run example:install && cd example && npx expo start`, and scan the QR code. Alternatively, if Android Studio and an emulator are on your PC, I can drive the build there.
 2. Package name (still `react-native-graphics`), formatter (Prettier) and license (`UNLICENSED`), carried over from Phase 0.
 
 ### Next phase

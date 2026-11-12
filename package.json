@@ -36,7 +36,8 @@
     "test": "jest",
     "test:coverage": "jest --coverage",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build",
-    "example:pack": "npm run build && node -e \"require('fs').mkdirSync('example/vendor',{recursive:true})\" && npm pack --pack-destination example/vendor"
+    "example:pack": "npm run build && node -e \"require('fs').mkdirSync('example/vendor',{recursive:true})\" && npm pack --pack-destination example/vendor",
+    "example:install": "npm run example:pack && cd example && npm install --no-audit --no-fund ./vendor/react-native-graphics-0.0.0.tgz"
   },
   "peerDependencies": {
     "@shopify/react-native-skia": "^2.14.0",

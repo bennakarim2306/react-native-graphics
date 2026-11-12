@@ -34,10 +34,9 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm run example:pack
-      # `npm install` (not `ci`): the freshly packed tarball's integrity differs from the lockfile.
-      - run: npm install --no-audit --no-fund
-        working-directory: example
+      # Packs the SDK and installs that exact tarball by path, so the lockfile's integrity
+      # entry is refreshed for the new pack instead of failing with EINTEGRITY.
+      - run: npm run example:install
       - run: npm run typecheck
         working-directory: example
       - run: npx expo export --platform android --output-dir dist-android
