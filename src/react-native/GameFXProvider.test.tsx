@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { StrictMode } from 'react';
 import { Pressable, Text } from 'react-native';
 import { VirtualClock } from '../runtime/clock';
-import type { EffectHandle, Engine } from '../runtime/engine';
+import type { EffectHandle, Engine } from '../engine/engine';
 import { GameFXOverlay } from './GameFXOverlay';
 import { GameFXProvider } from './GameFXProvider';
 import { useGameFX, useGameFXEngine } from './useGameFX';
@@ -133,5 +133,37 @@ describe('GameFXProvider + GameFXOverlay + useGameFX', () => {
     expect(fx.ready).toBe(true);
     expect(() => fx.play('particle-burst', { position: { x: 0, y: 0 }, count: 0 })).toThrow('count must be');
     expect(fx.activeCount).toBe(0);
+  });
+});
+
+describe('Scene and animations through the provider', () => {
+  it('animates scene nodes from the hook and cancels them on unmount', async () => {
+    const clock = new VirtualClock();
+    let api: ReturnType<typeof useGameFX> | null = null;
+    function Grab() {
+      api = useGameFX();
+      return null;
+    }
+    const view = await render(
+      <GameFXProvider clock={clock} layers={['cards']}>
+        <Grab />
+        <GameFXOverlay />
+      </GameFXProvider>,
+    );
+    const engine = (api as unknown as ReturnType<typeof useGameFX>).engine;
+    expect(engine).not.toBeNull();
+    const e = engine as Engine;
+    expect(e.scene.layers).toEqual(['default', 'cards']);
+    const node = e.scene.createNode({ layer: 'cards', shape: { type: 'circle', radius: 10, color: '#fff' } });
+    const playback = e.animate(node, { x: 100, duration: 200 }).play();
+    await act(() => {
+      clock.advance(100, { frameMs: 16 });
+    });
+    expect(node.x).toBe(50);
+    expect(e.drawables.map((d) => d.kind)).toEqual(['scene']);
+    await view.unmount();
+    await expect(playback.finished).resolves.toEqual({ status: 'cancelled', reason: 'disposed' });
+    expect(node.destroyed).toBe(true);
+    expect(clock.subscriberCount).toBe(0);
   });
 });

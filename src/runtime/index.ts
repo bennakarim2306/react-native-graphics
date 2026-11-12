@@ -7,13 +7,4 @@ export { createRandom } from './rng';
 export type { Random } from './rng';
 export { defineEffect } from './effect';
 export type { Drawable, EffectContext, EffectDefinition, EffectInstance } from './effect';
-export { createEngine, Engine } from './engine';
-export type {
-  EffectHandle,
-  EffectResult,
-  EffectStatus,
-  EngineEvents,
-  EngineOptions,
-  EngineState,
-  FrameEvent,
-} from './engine';
+export { LocalTimer } from './timer';

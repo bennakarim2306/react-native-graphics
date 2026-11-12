@@ -18,7 +18,7 @@ module.exports = {
       displayName: 'core',
       testEnvironment: 'node',
       roots: ['<rootDir>/src'],
-      testMatch: ['<rootDir>/src/{runtime,particles,effects}/**/*.test.ts', '<rootDir>/src/index.test.ts'],
+      testMatch: ['<rootDir>/src/{runtime,animation,scene,engine,particles,effects}/**/*.test.ts', '<rootDir>/src/index.test.ts'],
     },
     {
       // Skia renderer against real Skia (CanvasKit, CPU raster) in Node. Skia's Jest setup

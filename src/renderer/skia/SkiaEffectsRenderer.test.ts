@@ -8,6 +8,7 @@ import { particleBurst } from '../../effects/particleBurst';
 import type { ParticleBurstParams } from '../../effects/particleBurst';
 import { createRandom } from '../../runtime/rng';
 import type { Drawable } from '../../runtime/effect';
+import { Scene } from '../../scene/scene';
 import { SkiaEffectsRenderer } from './SkiaEffectsRenderer';
 
 const W = 200;
@@ -90,7 +91,7 @@ describe('SkiaEffectsRenderer (real Skia via CanvasKit)', () => {
     const stats = renderer.draw(surface.getCanvas(), [{ kind: 'shader' }, { kind: 'shader' }, ...burstDrawables({})]);
     expect(stats).toEqual({ drawnPrimitives: 1, skippedDrawables: 2 });
     expect(reported).toEqual(['shader']);
-    expect(renderer.capabilities.kinds).toEqual(['particles']);
+    expect(renderer.capabilities.kinds).toEqual(['scene', 'particles']);
   });
 
   it('draws nothing after dispose', () => {
@@ -98,5 +99,26 @@ describe('SkiaEffectsRenderer (real Skia via CanvasKit)', () => {
     const renderer = new SkiaEffectsRenderer(Skia);
     renderer.dispose();
     expect(renderer.draw(surface.getCanvas(), burstDrawables({})).drawnPrimitives).toBe(0);
+  });
+
+  it('draws scene shapes under their hierarchical world transforms', () => {
+    const scene = new Scene();
+    const parent = scene.createNode({ x: 100, y: 100, rotation: 90 });
+    // A 60x10 bar along the child's x axis; the parent's 90° rotation makes it vertical.
+    scene.createNode({ parent, x: 0, y: 0, shape: { type: 'rect', width: 60, height: 10, color: '#00FF00' } });
+    scene.createNode({ x: 30, y: 30, opacity: 0.5, shape: { type: 'circle', radius: 8, color: '#0000FF' } });
+    scene.createNode({ x: 170, y: 170, shape: { type: 'rect', width: 20, height: 20, color: '#FF0000', cornerRadius: 4 } });
+    const surface = makeSurface();
+    const renderer = new SkiaEffectsRenderer(Skia);
+    const stats = renderer.draw(surface.getCanvas(), [scene.drawable()]);
+    expect(stats).toEqual({ drawnPrimitives: 3, skippedDrawables: 0 });
+    expect(pixelAt(surface, 100, 125).slice(0, 3)).toEqual([0, 255, 0]); // inside the rotated bar
+    expect(pixelAt(surface, 125, 100)[3]).toBe(0); // where the unrotated bar would be
+    const [, , blue, alpha] = pixelAt(surface, 30, 30);
+    expect(blue).toBe(255);
+    expect(alpha).toBeGreaterThan(120);
+    expect(alpha).toBeLessThan(135);
+    expect(pixelAt(surface, 170, 170).slice(0, 3)).toEqual([255, 0, 0]);
+    expect(pixelAt(surface, 160, 160)[3]).toBe(0); // rounded corner cut off
   });
 });

@@ -4,7 +4,119 @@
 | --- | --- |
 | 0. Repository audit and migration | **Done** (2026-11-11, merged in PR #1) |
 | 1. Working engine prototype (particle burst) | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not yet verified. See below |
-| 2 to 6 | Not started |
+| 2. Runtime, scene graph and animation orchestration | **Done in code and tests** (2026-11-12). Demo checked in the web build; not yet run on a device. See below |
+| 3 to 6 | Not started |
+
+## Phase 2: Runtime, scene graph and animation orchestration (2026-11-12)
+
+### Status
+
+**Done for code, tests and bundles.** Every Phase 2 completion requirement below is backed by an automated test that was run. The extended showcase type-checks, bundles for Android and iOS, and runs in the web build (genuine Chromium screenshots of Skia/CanvasKit rendering). **It has not run on a device or emulator yet.** The owner asked to skip iOS for now; the Android emulator run of the new tab is the next verification step.
+
+Step 1 (project state): the latest CLAUDE.md defines Phase 2 as "clock/scheduler, stateful handles, lifecycle, timelines, interpolation, nodes/layers, deterministic composition", which matches the owner's Phase 2 brief. No discrepancy. Phase 1 code was kept; the engine moved from `src/runtime/` to `src/engine/` because it now composes the animation and scene modules, and `runtime` stays the lowest layer. All 60 Phase 1 tests still pass unchanged (only import paths moved).
+
+| Completion requirement | Evidence |
+| --- | --- |
+| Runtime works independently of any React Native app | `src/index.test.ts` runs a scene + timeline + impact marker through `react-native-graphics/core` in plain Node. ESLint forbids React/RN/Skia imports in `runtime`, `animation`, `scene`, `engine` |
+| Scene graph transformations are correct | `src/scene/scene.test.ts`: parent/child composition, cache invalidation, local/world/node conversions, inverse, bounds, draw order, layers. `SkiaEffectsRenderer.test.ts` rasterizes a rotated child with real Skia and checks pixels |
+| Timeline execution is deterministic | Pure `render(t)` tests (forwards, backwards, loops, yoyo); frame-rate independence (16 ms vs 7 ms frames give identical values); repeated runs give identical results |
+| Multiple animations can be composed | Sequence, parallel, stagger, nested timelines, keyframes, simultaneous playbacks, interruption |
+| Cancellation and cleanup | cancel/stop/finish/reset/cancelAll/dispose, cancelling from a marker listener, provider unmount (playbacks cancelled, nodes destroyed, clock unsubscribed) |
+| Phase 1 still works | All Phase 1 tests pass; the web build shows a burst on the Effects tab after using the Motion tab |
+
+### What was built
+
+- **Runtime** (`src/runtime`): `LocalTimer` (pausable, seekable local time without accumulated deltas). Clocks, RNG, emitter, errors and the effect contract are unchanged.
+- **Animation** (`src/animation`): easings (`linear`, quad, cubic, sine, back, bounce families, aliases, `cubicBezier`); `AnimationTarget` and `objectTarget`; `Playable` base (delay, repeat incl. `Infinity`, yoyo, pure `render(t)`, marker collection over time intervals with iteration mapping); `Tween` (captured or explicit start values, easing, overwrite, never writes destroyed targets); `KeyframeAnimation` (per-property tracks, per-segment easing); `Timeline` (positions `>`, `<`, `+=`, `-=`, ms, marker-relative; `mark`, `call`; exact backward seeking; nesting; locking); `sequence`, `parallel`, `stagger`, `wait`; `Playback` (pause, resume, cancel, stop, finish, seek; events `start`, `pause`, `resume`, `marker`, `loop`, `interrupted`, `end`; `onMarker`; `finished` never rejects).
+- **Scene** (`src/scene`): 2D affine matrices; `Scene` and `SceneNode` (transform, opacity, visibility, zIndex, layers, built-in rect/circle shapes, hierarchy with cycle checks, recursive destroy, cached world matrices, coordinate conversions, bounds, traversal); flat draw list; `Attachment` interface with per-frame world state and exactly-once `onDetach`; `HostViewBinding` contract and `syncNodeToLayout` for future React Native view anchoring.
+- **Engine** (`src/engine`): owns the scene, playbacks and effects; `animate`, `keyframes`, `timeline`, `sequence`, `parallel`, `stagger`, `wait`, `run`; engine `pause`/`resume`/`reset`; per-effect `pause`/`resume`; `overwrite: 'auto'` interruption; frame order playbacks → effects → attachments → publish; clock subscription only while needed; `playbackStart`/`playbackEnd` events.
+- **Renderer**: `SkiaEffectsRenderer` also draws `scene` drawables (rect, rounded rect, circle under each node's world matrix, with world opacity).
+- **React Native**: `useGameFX().engine`; `GameFXProvider` `layers` prop; unmount also cancels playbacks and destroys the scene.
+- **Showcase**: new **Motion & timelines** tab (`example/MotionDemo.tsx`), public API only: a sun with an orbiting planet and moon (hierarchical transforms, endless loops), five staggered keyframe loops (several objects at once), a card throw timeline (rise + spin, fall, `impact` marker, squash keyframes) whose impact plays a particle burst at the contact point, buttons for cancel, rewind (`stop`), skip (`finish`, impact delivered as skipped so no burst) and engine pause/resume, and an event log fed by playback events (no per-frame React state).
+
+### Verification (commands run in the Linux cloud container, Node 22.23.4, npm 10.9.9)
+
+| Command | Result |
+| --- | --- |
+| `npm run typecheck` | Pass |
+| `npm run lint` | Pass (boundary rule now also covers `src/engine`) |
+| `npm test -- --ci` | **Pass: 14 suites, 160 tests** (60 from Phase 1, 100 new) |
+| `npx jest --coverage --ci` | All files: 92.8 % statements, 85.8 % branches, 95.3 % lines |
+| `npm run build` | Pass |
+| `npm run example:install` | Pass (packed tarball installed by path; `example/package-lock.json` integrity updated) |
+| `cd example && npx tsc --noEmit` | Pass |
+| `cd example && CI=1 EXPO_OFFLINE=1 npx expo export --platform android` | Pass: Hermes bundle, 1236 modules |
+| `cd example && CI=1 EXPO_OFFLINE=1 npx expo export --platform ios` | Pass: Hermes bundle, 1238 modules |
+| `cd example && npx expo export --platform web`, served locally, driven with Playwright (Chromium, 412×915) | Pass, no page errors. Orbit and staggered loops animate; the throw logs `impact at 1080 ms` and the burst appears at the floor contact; cancel leaves the card mid-air (`cancelled (user)`); skip completes with `impact at 1080 ms (skipped)` and no burst; the Effects tab still plays bursts afterwards |
+
+New tests by area:
+- **Easing and tweens:** values at exact timestamps; delay; repeat and yoyo; endless loops; zero duration; 10 invalid-option cases; destroyed targets; killed properties; keyframes.
+- **Timelines:** positions; locking; sequence, parallel and stagger; backward seek; repeat and yoyo; nesting; markers, callbacks and nested markers; same-time ordering; the iteration cap.
+- **Scene and attachments:** hierarchy; destroy; validation; transforms and coordinates; cache invalidation; opacity, visibility and bounds; scale-0 inverse; host binding; draw order and layers; dirty tracking; attachments (offset under rotation, hidden, left the scene, error isolation, detach reasons).
+- **Engine and playbacks:**
+  - lifecycle and idle clock
+  - frame-rate independence
+  - simultaneous playbacks
+  - invalid input without side effects
+  - zero duration
+  - double-run protection
+  - pause and resume
+  - cancel versus stop
+  - seek forwards, backwards and while paused
+  - finish with skipped markers
+  - finishing an endless loop
+  - loop events
+  - exact impact timing between frames
+  - full event ordering across two iterations in one large frame
+  - pause or cancel from a marker listener
+  - error isolation
+  - motion → impact → particle burst at the node's world position
+  - interruption (auto, scale overlap, none)
+  - node removal and destruction during animation
+  - hierarchical animation
+  - attachments after animations
+  - scene below effects
+  - engine pause and resume
+  - effect pause
+  - reset, cancelAll, dispose
+  - determinism
+- **Renderer:** scene shapes with real Skia pixels (rotated child, opacity, rounded corner).
+- **React Native:** layers prop, scene animation through the hook, cleanup on unmount.
+
+Screenshots from the web build (real CanvasKit rendering in Chromium, **not** a device) are in the project files (`phase2/screenshots/`).
+
+**Not run:** Android or iOS devices, emulators or simulators for the Phase 2 tab; release builds; frame-time, memory or CPU measurements.
+
+### Changed files
+
+New: `src/animation/{easing,target,playable,tween,timeline,playback,index}.ts` (+ `easing`, `tween`, `timeline` tests), `src/scene/{matrix,node,scene,attachment,host,index}.ts` (+ `scene.test.ts`), `src/engine/{engine,index}.ts` (+ `playback.test.ts`), `src/runtime/timer.ts`, `example/MotionDemo.tsx`.
+Moved: `src/runtime/engine.ts` → `src/engine/engine.ts` (extended), `src/runtime/engine.test.ts` → `src/engine/engine.test.ts` (imports only).
+Changed: `src/core.ts`, `src/runtime/index.ts`, `src/effects/{index,particleBurst}.ts` (`Point` now comes from `scene`), `src/renderer/skia/SkiaEffectsRenderer.ts` (+ test), `src/react-native/{GameFXProvider.tsx,useGameFX.ts,context.ts}` (+ test), `src/index.test.ts`, `jest.config.js`, `eslint.config.mjs`, `example/App.tsx` (tabs), `example/package-lock.json`, `README.md`, `docs/{API,ARCHITECTURE,PROGRESS}.md`.
+
+### API changes from Phase 1
+
+- `EffectHandle` gains `pause()` and `resume()`, `status` can be `paused`, and `reason` can be `reset`.
+- `cancelAll()` now also cancels animation playbacks.
+- `Engine.state` can be `paused`.
+- `FrameEvent.drawables` starts with a `scene` drawable when the scene has visible shapes.
+- `FrameEvent.time` is engine time: clock time minus paused time, starting at 0 when the engine was created.
+- `Point` is exported from the scene module (same shape as before).
+
+### Known limitations
+
+- **Thread model unchanged:** animations run on the JS thread. A busy JS thread delays frames but not the timing of values or markers.
+- **Opacity:** it is multiplied per shape. There is no group compositing yet, so overlapping children of a semi-transparent parent show through each other.
+- **Built-in shapes only:** scene nodes draw rects and circles. Images and sprites come in Phase 3.
+- **Attachments:** they are an interface with tests, but no built-in effect follows a node yet (Phase 3).
+- **React Native views:** binding is a documented contract. There is no hook that measures views yet, and scrolling is not followed: the demo stage must not scroll.
+- **Same-time markers:** if a listener pauses at a marker, other markers at exactly the same time are skipped. Markers at the end of a yoyo iteration fire on both passes.
+- **Large jumps in endless loops:** at most the last 1000 iterations are scanned for markers.
+- **No device verification yet:** Phase 2 has not run on a device or emulator, and nothing is measured.
+
+### Next step
+
+1. **Owner:** run the **Motion & timelines** tab on the Android 17 emulator in Expo Go. Run `git pull`, then `npm ci`, `npm run example:install`, `cd example`, `npx expo start`, one command per line in PowerShell.
+2. **Phase 3** (particle and sprite systems, assets) starts after the owner approves it. It builds on attachments, so emitters can follow nodes.
 
 ## Phase 1: Working engine prototype (2026-11-12)
 
@@ -90,7 +202,7 @@ Changed: `package.json` (exports, peer and dev dependencies, scripts), `package-
 
 ### Next phase
 
-Phase 2 (runtime and scene composition) starts when the owner approves it. Standing rule: every new effect also gets a demo in a small standalone example app like `example/`, so it can be tried on a device.
+Phase 2 (runtime and scene composition) was approved on 2026-11-12 and is recorded above. Standing rule: every new effect also gets a demo in a small standalone example app like `example/`, so it can be tried on a device.
 
 ## Phase 0: Repository audit and migration (2026-11-11)
 

@@ -2,7 +2,7 @@
 
 An embeddable 2D game-effects engine for existing React Native apps. Mount one transparent overlay and trigger effects through a typed API, without writing animation internals. Game rules and app state stay in your app.
 
-> **Status: Phase 1 prototype.** One effect exists (`particle-burst`). The API is not stable yet and the package is not published. See [docs/PROGRESS.md](docs/PROGRESS.md) for what has and has not been verified. It has run on an Android 17 emulator in Expo Go, but not yet on iOS.
+> **Status: Phase 2.** The engine has a scene graph, tweens, keyframes, timelines with event markers, and one effect (`particle-burst`). The API is not stable yet and the package is not published. See [docs/PROGRESS.md](docs/PROGRESS.md) for what has and has not been verified. Phase 1 has run on an Android 17 emulator in Expo Go; the Phase 2 demo has been checked in the web build only so far, and nothing has run on iOS yet.
 
 ## Requirements
 
@@ -65,9 +65,28 @@ function Screen() {
 
 Positions are in points relative to the overlay's top-left corner. If the overlay fills the screen from the window origin, `pageX`/`pageY` can be used directly. See [docs/API.md](docs/API.md).
 
+### Scene nodes, timelines and impact events
+
+```tsx
+const { engine } = useGameFX();               // available once fx.ready is true
+const card = engine.scene.createNode({
+  x: 200, y: 500,
+  shape: { type: 'rect', width: 44, height: 64, color: '#fff', cornerRadius: 6 },
+});
+const playback = engine.timeline()
+  .add(engine.animate(card, { y: 270, rotation: 360, duration: 520, easing: 'easeOutQuad' }))
+  .add(engine.animate(card, { y: 500, duration: 560, easing: 'easeInQuad' }))
+  .mark('impact')                             // exactly when the fall ends
+  .play();
+playback.onMarker('impact', () => {
+  fx.play('particle-burst', { position: card.localToWorld({ x: 0, y: 32 }) });
+});
+// playback.pause() / resume() / cancel() / stop() / finish() / seek(ms); await playback.finished
+```
+
 ## Showcase app
 
-`example/` is a separate Expo SDK 58 app that installs the packed SDK tarball and imports only the public entry point.
+`example/` is a separate Expo SDK 58 app that installs the packed SDK tarball and imports only the public entry point. It has two tabs: **Particle effects** (Phase 1 bursts) and **Motion & timelines** (Phase 2: orbiting hierarchy, staggered keyframe loops, and a thrown card whose `impact` marker triggers a burst, with cancel, rewind, skip and pause buttons).
 
 ```sh
 npm ci

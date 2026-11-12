@@ -2,9 +2,11 @@ import type { SkCanvas, SkColor, SkPaint, SkPicture, SkRect, Skia as SkiaApi } f
 import { isParticleDrawable } from '../../particles/burst';
 import type { ParticleDrawable } from '../../particles/burst';
 import type { Drawable } from '../../runtime/effect';
+import { isSceneDrawable } from '../../scene/scene';
+import type { SceneDrawable } from '../../scene/scene';
 
 /** The part of the Skia API the renderer uses. Injected so it can run against CanvasKit in tests. */
-export type SkiaFactory = Pick<typeof SkiaApi, 'Paint' | 'Color' | 'PictureRecorder' | 'XYWHRect'>;
+export type SkiaFactory = Pick<typeof SkiaApi, 'Paint' | 'Color' | 'PictureRecorder' | 'XYWHRect' | 'RRectXY'>;
 
 export interface RendererCapabilities {
   /** Drawable kinds this renderer can draw. Others are skipped and reported once. */
@@ -21,7 +23,7 @@ export interface DrawStats {
  * It holds one reusable paint and a color cache; call `dispose` to release them.
  */
 export class SkiaEffectsRenderer {
-  readonly capabilities: RendererCapabilities = { kinds: ['particles'] };
+  readonly capabilities: RendererCapabilities = { kinds: ['scene', 'particles'] };
   private readonly paint: SkPaint;
   private readonly colorCache = new Map<string, SkColor>();
   private readonly reportedKinds = new Set<string>();
@@ -43,6 +45,8 @@ export class SkiaEffectsRenderer {
     for (const drawable of drawables) {
       if (isParticleDrawable(drawable)) {
         drawnPrimitives += this.drawParticles(canvas, drawable);
+      } else if (isSceneDrawable(drawable)) {
+        drawnPrimitives += this.drawScene(canvas, drawable);
       } else {
         skippedDrawables++;
         if (!this.reportedKinds.has(drawable.kind)) {
@@ -79,6 +83,32 @@ export class SkiaEffectsRenderer {
       this.paint.setColor(color);
       this.paint.setAlphaf((color[3] ?? 1) * opacity);
       canvas.drawCircle(particles.x[i] ?? 0, particles.y[i] ?? 0, radius, this.paint);
+      drawn++;
+    }
+    return drawn;
+  }
+
+  /** Draws scene shapes, each under its node's world matrix. */
+  private drawScene(canvas: SkCanvas, scene: SceneDrawable): number {
+    let drawn = 0;
+    for (const item of scene.items) {
+      const shape = item.shape;
+      const color = this.color(shape.color);
+      const [a, b, c, d, e, f] = item.matrix;
+      this.paint.setColor(color);
+      this.paint.setAlphaf((color[3] ?? 1) * item.opacity);
+      canvas.save();
+      // Skia takes a row-major 3x3 matrix.
+      canvas.concat([a, c, e, b, d, f, 0, 0, 1]);
+      if (shape.type === 'circle') {
+        canvas.drawCircle(0, 0, shape.radius, this.paint);
+      } else {
+        const rect = this.skia.XYWHRect(-shape.width / 2, -shape.height / 2, shape.width, shape.height);
+        const radius = shape.cornerRadius ?? 0;
+        if (radius > 0) canvas.drawRRect(this.skia.RRectXY(rect, radius, radius), this.paint);
+        else canvas.drawRect(rect, this.paint);
+      }
+      canvas.restore();
       drawn++;
     }
     return drawn;

@@ -4,8 +4,8 @@ import { builtInEffects } from '../effects';
 import type { Clock } from '../runtime/clock';
 import type { EffectDefinition } from '../runtime/effect';
 import type { ErrorReporter } from '../runtime/emitter';
-import { createEngine } from '../runtime/engine';
-import type { Engine } from '../runtime/engine';
+import { createEngine } from '../engine/engine';
+import type { Engine } from '../engine/engine';
 import { GameFXContext } from './context';
 import { createDefaultClock } from './defaultClock';
 
@@ -17,14 +17,17 @@ export interface GameFXProviderProps {
   readonly seed?: number;
   /** Maximum simultaneous effects; the oldest is cancelled beyond it. Default 32. */
   readonly maxActiveEffects?: number;
+  /** Scene layer names from bottom to top (`default` is always included). */
+  readonly layers?: readonly string[];
   /** Clock override, mainly for tests. Defaults to a `requestAnimationFrame` clock. */
   readonly clock?: Clock;
   readonly onError?: ErrorReporter;
 }
 
 /**
- * Owns one effects engine for its subtree. The engine is created when the provider mounts and
- * disposed (all effects cancelled, frame loop stopped) when it unmounts.
+ * Owns one engine (scene, animations, effects) for its subtree. The engine is created when the
+ * provider mounts and disposed (playbacks and effects cancelled, scene destroyed, frame loop
+ * stopped) when it unmounts.
  *
  * Options are read once at mount; changing them later has no effect.
  */
@@ -33,6 +36,7 @@ export function GameFXProvider({
   effects,
   seed,
   maxActiveEffects,
+  layers,
   clock,
   onError,
 }: GameFXProviderProps): ReactNode {
@@ -44,6 +48,7 @@ export function GameFXProvider({
       effects: [...builtInEffects, ...(effects ?? [])],
       ...(seed !== undefined ? { seed } : {}),
       ...(maxActiveEffects !== undefined ? { maxActiveEffects } : {}),
+      ...(layers !== undefined ? { layers } : {}),
       ...(onError !== undefined ? { onError } : {}),
     });
     setEngine(created);

@@ -1,7 +1,7 @@
 import { useContext, useMemo } from 'react';
 import type { BuiltInEffects } from '../effects';
 import type { EffectDefinition } from '../runtime/effect';
-import type { EffectHandle, Engine } from '../runtime/engine';
+import type { EffectHandle, Engine } from '../engine/engine';
 import { GameFXContext } from './context';
 
 export interface PlayOptions {
@@ -23,6 +23,11 @@ export interface GameFX {
   cancelAll(): void;
   /** Number of running effects. */
   readonly activeCount: number;
+  /**
+   * The provider's engine for scene nodes, animations and timelines
+   * (`engine.scene.createNode`, `engine.animate`, `engine.timeline`). Null until `ready`.
+   */
+  readonly engine: Engine | null;
 }
 
 class NotReadyError extends Error {
@@ -47,6 +52,7 @@ function createApi(engine: Engine | null): GameFX {
     get activeCount() {
       return engine?.activeCount ?? 0;
     },
+    engine,
   };
 }
 
