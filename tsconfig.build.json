@@ -7,8 +7,16 @@
     "sourceMap": true,
     "outDir": "lib",
     "rootDir": "src",
-    "types": []
+    "types": [
+      "react-native"
+    ]
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.ts", "src/**/__tests__/**"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/__tests__/**"
+  ]
 }

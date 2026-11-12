@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+dist/
+dist-*/
+web-build/
+vendor/
+ios/
+android/
+*.tgz
+public/canvaskit.wasm

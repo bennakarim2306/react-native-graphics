@@ -22,3 +22,31 @@ jobs:
       - run: npm run lint
       - run: npm test -- --ci
       - run: npm run build
+
+  example:
+    # Consumer contract: the showcase installs the packed SDK tarball and must type-check
+    # and bundle for Android and iOS using only the public entry point.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run example:pack
+      # `npm install` (not `ci`): the freshly packed tarball's integrity differs from the lockfile.
+      - run: npm install --no-audit --no-fund
+        working-directory: example
+      - run: npm run typecheck
+        working-directory: example
+      - run: npx expo export --platform android --output-dir dist-android
+        working-directory: example
+        env:
+          CI: '1'
+          EXPO_OFFLINE: '1'
+      - run: npx expo export --platform ios --output-dir dist-ios
+        working-directory: example
+        env:
+          CI: '1'
+          EXPO_OFFLINE: '1'

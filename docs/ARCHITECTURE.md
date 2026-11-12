@@ -1,6 +1,6 @@
 # Architecture
 
-Status: **Phase 0 proposal.** Only the toolchain and the lint boundary below exist in code. Everything else is the target the next phases build and prove. Decisions still open are listed in [PROGRESS.md](PROGRESS.md#pending-decisions).
+Status: **Phase 1.** Implemented so far: `runtime` (engine, clocks, seeded RNG, effect contract), `particles` (burst simulation), `effects` (`particle-burst`), `renderer/skia` and `react-native` (provider, overlay, hook). `animation`, `scene` and `sprites` are still plans for Phases 2 and 3. Open decisions are listed in [PROGRESS.md](PROGRESS.md).
 
 ## What the product is
 
@@ -30,36 +30,41 @@ One package to start, with internal modules. Arrows point to what a module may i
 
 | Module | Pure TS, no React/RN/Skia? | First needed in |
 | --- | --- | --- |
-| `runtime` | Yes | Phase 1 (minimal), Phase 2 (full) |
+| `runtime` | Yes | **Phase 1 (done, minimal)**, Phase 2 (full) |
 | `animation` | Yes | Phase 2 |
 | `scene` | Yes | Phase 2 |
-| `particles` | Yes (simulation only) | Phase 1 (one burst), Phase 3 |
+| `particles` | Yes (simulation only) | **Phase 1 (burst done)**, Phase 3 |
 | `sprites` | Yes (frame math, atlas metadata) | Phase 3 |
-| `effects` | Yes | Phase 1 (one preset), Phase 4 |
-| `renderer/skia` | No: the only module importing `@shopify/react-native-skia` | Phase 1 |
-| `react-native` | No: host integration | Phase 1 |
+| `effects` | Yes | **Phase 1 (`particle-burst` done)**, Phase 4 |
+| `renderer/skia` | No: the only module importing `@shopify/react-native-skia` drawing APIs | **Phase 1 (done)** |
+| `react-native` | No: host integration | **Phase 1 (done)** |
 
 The "pure" column is **enforced** by an ESLint `no-restricted-imports` rule in `eslint.config.mjs`. It rejects imports of `react`, `react-native`, `react-native-*`, `@shopify/*` and of the `renderer/` and `react-native/` folders from the six engine modules.
 
 Belote Tunisienne, or any other game, is an external consumer. Card-specific presets and the mapping from game events to effects live in that consumer, or in an optional adapter in Phase 6.
 
-## Thread model (to be proven in Phase 1)
+## Thread model (Phase 1, as implemented)
 
-The decision is **not final** until the Phase 1 vertical slice runs on a device.
+The UI-thread worklet approach proposed in Phase 0 was **not** used for the first slice. It needs worklet-compatible simulation code and cannot be verified without a device. Phase 1 uses the simpler, documented fallback:
 
-**Proposal:** per-frame simulation runs on the **UI thread** inside a Reanimated `useFrameCallback`. Results go into shared values that Skia reads directly. Particles are drawn as a single Skia `Atlas` (one draw call with per-particle transforms). React does not re-render per frame. The JS thread only starts, cancels and disposes effects.
+1. **Simulation runs on the JS thread.** `FrameClock` uses `requestAnimationFrame`. The engine subscribes to it **only while effects are running**, so an idle engine does no per-frame work.
+2. Each frame, the engine updates its effects from absolute elapsed time and emits a `frame` event with renderer-independent drawables (typed arrays that are reused, not reallocated).
+3. `GameFXOverlay` records those drawables into an `SkPicture` with Skia's `PictureRecorder` (a JSI call, not the old bridge) and assigns it to a Reanimated shared value. The `<Picture>` element in the Skia `<Canvas>` redraws from it. **React does not re-render per frame.**
 
-- This requires the simulation functions to be **worklet-compatible**: plain functions over numbers and arrays that carry a `'worklet'` directive. The directive is only a string literal, so the engine modules stay importable and testable in Node without any React Native dependency.
-- Arbitrary TypeScript (closures over classes, Maps, Promises) does **not** run on the UI thread. The engine therefore separates *descriptions and handles* (JS thread) from *per-frame math* (worklets).
-- **Fallback** if the UI-thread approach fails on device: run the simulation on the JS thread with `requestAnimationFrame` and push snapshots to Skia through shared values. It is simpler, but it competes with the app's JS work.
+Consequences and limits:
+- A busy JS thread delays effect frames. Effects stay correct (time-based), but may skip frames.
+- Moving simulation to the UI thread remains an option for Phase 3. The pure, closed-form particle math was written so it can be moved to worklets later.
+- Assigning a JS-recorded `SkPicture` to a shared value has been verified on **web** (Reanimated web + CanvasKit) and in Jest. It has **not been verified on Android or iOS yet**.
 
 ## Runtime concepts
 
 - **Clock**: injected interface (`now()`, frame subscription). `VirtualClock` for tests (advanced manually, no real sleeps). Frame clock adapter on device.
 - **Time sampling**: effects evaluate `t = now - start - pausedTime`, clamped to the effect's duration. They do not accumulate per-frame deltas, so large frame gaps cannot cause drift. Large deltas are a required test case.
 - **Seeded RNG**: all randomness (emission angles, colors, jitter) comes from an injected, seedable generator. The same seed gives the same particles in tests.
-- **Effect handle**: `fx.play(...)` returns a handle with `pause()`, `resume()`, `cancel()`, `finish()`, `seek(ms)` (where meaningful), `state` and `finished: Promise<{ status: 'completed' | 'cancelled' }>`. `finished` **resolves** on cancel and never rejects for it, so skipped effects cannot cause unhandled rejections. Invalid parameters throw synchronously at `play()`.
-- **States**: `idle -> playing <-> paused -> completed | cancelled -> disposed`. Disposal releases all resources and is idempotent.
+- **Effect handle** (Phase 1): `fx.play(...)` returns a handle with `cancel()`, `status` and `finished: Promise<{ status: 'completed' | 'cancelled', reason? }>`. `finished` **resolves** on cancel and never rejects, so skipped effects cannot cause unhandled rejections. Invalid parameters throw synchronously at `play()`. `pause`, `resume`, `finish` and `seek` are planned for Phase 2.
+- **States** (Phase 1): `playing -> completed | cancelled`. The engine itself is `running -> disposed`. Disposal releases all resources and is idempotent.
+- **Effect contract**: `EffectDefinition.create(params, { random })` validates and returns an `EffectInstance` with `update(elapsedMs)`, `done`, `drawables` and `dispose()`. The engine calls `dispose` exactly once.
+- **Bounded resources**: at most 2000 particles per burst and `maxActiveEffects` (default 32) running effects. The oldest effect is cancelled beyond that limit.
 
 ## Scene model (Phase 2, kept minimal)
 
@@ -78,10 +83,10 @@ Safe-area insets are exposed to effects as data. They are not applied silently, 
 ## Host integration
 
 - `<GameFXProvider>` owns the runtime, registry and lifecycle scope for its subtree.
-- `<GameFXCanvas>` is an absolutely positioned, transparent Skia canvas with `pointerEvents="none"` by default, so it never blocks the host app's touches. Interactive modes are opt-in.
-- `useGameFX()` returns the typed API (`play`, `register`, `cancelAll`).
+- `<GameFXOverlay>` (named `GameFXCanvas` in the Phase 0 proposal) is an absolutely positioned, transparent Skia canvas with `pointerEvents="none"` by default, so it never blocks the host app's touches. Interactive modes are opt-in.
+- `useGameFX()` returns the typed API (`play`, `cancelAll`, `activeCount`, `ready`). Custom effects are registered through the provider's `effects` prop.
 - Unmounting the provider cancels and disposes every effect, stops frame callbacks and releases images and atlases. No effect callback fires after unmount.
-- Reduced motion (`AccessibilityInfo`) and a quality setting are provider options that presets must honor.
+- Reduced motion (`AccessibilityInfo`) and a quality setting are planned provider options (not in Phase 1).
 
 ## Effects and extensibility
 
@@ -93,7 +98,8 @@ Safe-area insets are exposed to effects as data. They are not applied silently, 
 
 - Native libraries (`react`, `react-native`, `@shopify/react-native-skia`, `react-native-reanimated`, `react-native-worklets`) become **peer dependencies**. The SDK does not bundle them.
 - Version baseline proposed from Expo SDK 58 (current on 2026-11-11): React Native 0.88.1, React 19.3.0, Reanimated 4.7.1, Worklets 0.13.0, Skia 2.14.0. Reanimated 4 requires the New Architecture.
-- A **separate example app** (`example/`) consumes the SDK only through its built public entry point. CI also packs the SDK with `npm pack` and type-checks the example against the tarball, so private paths cannot leak into the contract.
+- A **separate example app** (`example/`) installs the SDK from the `npm pack` tarball and imports only `react-native-graphics`. CI packs the SDK, installs it into the example, type-checks it and bundles it for Android and iOS, so private paths cannot leak into the contract.
+- Entry points: `react-native-graphics` (everything) and `react-native-graphics/core` (no React Native, React or Skia imports).
 
 ## What carries over from the earlier card-SDK design
 
