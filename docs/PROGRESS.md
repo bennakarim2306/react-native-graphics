@@ -4,14 +4,16 @@
 | --- | --- |
 | 0. Repository audit and migration | **Done** (2026-11-11, merged in PR #1) |
 | 1. Working engine prototype (particle burst) | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not yet verified. See below |
-| 2. Runtime, scene graph and animation orchestration | **Done in code and tests** (2026-11-12). Demo checked in the web build; not yet run on a device. See below |
+| 2. Runtime, scene graph and animation orchestration | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not verified. See below |
 | 3 to 6 | Not started |
 
 ## Phase 2: Runtime, scene graph and animation orchestration (2026-11-12)
 
 ### Status
 
-**Done for code, tests and bundles.** Every Phase 2 completion requirement below is backed by an automated test that was run. The extended showcase type-checks, bundles for Android and iOS, and runs in the web build (genuine Chromium screenshots of Skia/CanvasKit rendering). **It has not run on a device or emulator yet.** The owner asked to skip iOS for now; the Android emulator run of the new tab is the next verification step.
+**Done for Android.** Every Phase 2 completion requirement below is backed by an automated test that was run. The extended showcase type-checks, bundles for Android and iOS, and runs in the web build (genuine Chromium screenshots of Skia/CanvasKit rendering).
+
+**Android, verified 2026-11-12 by the project owner** (Android 17 emulator, Expo Go SDK 58, debug bundle from `npx expo start`): on the Motion & timelines tab, Throw card, Cancel throw and Pause all worked as expected. In the first build, Rewind throw and Skip to end ended in the same place (both left the card upright where it started), so they could not be told apart. The demo was changed so the card crosses the stage (commit `c04b663`), and the owner then reported that both worked as expected. No screenshots were taken of this run. **iOS was skipped at the owner's request.**
 
 Step 1 (project state): the latest CLAUDE.md defines Phase 2 as "clock/scheduler, stateful handles, lifecycle, timelines, interpolation, nodes/layers, deterministic composition", which matches the owner's Phase 2 brief. No discrepancy. Phase 1 code was kept; the engine moved from `src/runtime/` to `src/engine/` because it now composes the animation and scene modules, and `runtime` stays the lowest layer. All 60 Phase 1 tests still pass unchanged (only import paths moved).
 
@@ -85,7 +87,7 @@ New tests by area:
 
 Screenshots from the web build (real CanvasKit rendering in Chromium, **not** a device) are in the project files (`phase2/screenshots/`).
 
-**Not run:** Android or iOS devices, emulators or simulators for the Phase 2 tab; release builds; frame-time, memory or CPU measurements.
+**Not run by me:** devices, emulators or simulators (the owner ran the Android emulator, see Status); release builds; frame-time, memory or CPU measurements.
 
 ### Changed files
 
@@ -111,12 +113,11 @@ Changed: `src/core.ts`, `src/runtime/index.ts`, `src/effects/{index,particleBurs
 - **React Native views:** binding is a documented contract. There is no hook that measures views yet, and scrolling is not followed: the demo stage must not scroll.
 - **Same-time markers:** if a listener pauses at a marker, other markers at exactly the same time are skipped. Markers at the end of a yoyo iteration fire on both passes.
 - **Large jumps in endless loops:** at most the last 1000 iterations are scanned for markers.
-- **No device verification yet:** Phase 2 has not run on a device or emulator, and nothing is measured.
+- **Device coverage:** Phase 2 has been verified only on an Android 17 emulator. It has not run on iOS, physical devices or release builds, and nothing is measured.
 
 ### Next step
 
-1. **Owner:** run the **Motion & timelines** tab on the Android 17 emulator in Expo Go. Run `git pull`, then `npm ci`, `npm run example:install`, `cd example`, `npx expo start`, one command per line in PowerShell.
-2. **Phase 3** (particle and sprite systems, assets) starts after the owner approves it. It builds on attachments, so emitters can follow nodes.
+1. **Phase 3** (particle and sprite systems, assets) starts after the owner approves it. It builds on attachments, so emitters can follow nodes.
 
 ## Phase 1: Working engine prototype (2026-11-12)
 
