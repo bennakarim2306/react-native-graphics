@@ -19,6 +19,16 @@ A developer can, within a normal React Native app:
 6. Stop, pause, skip, or dispose effects safely; navigate/unmount without leaks.
 7. Run on supported Android and iOS versions with verified setup and observable performance.
 
+## Capability requirements
+The engine must support applying complex, composable, game-quality visual effects to existing React Native components, including effects attached to moving and rotating objects, physics-inspired motion, particle emissions, shaders, impact-triggered explosions, and synchronized multi-stage animations. Developers must be able to combine these capabilities through a simple public API without implementing their own rendering or effect logic.
+
+Interpretation notes (keep consistent with the scope above):
+- **Attached to moving/rotating objects:** effects can follow a target (an anchored host view or a scene node) and inherit its position and rotation while it moves, not just a fixed point captured at trigger time.
+- **Physics-inspired motion:** velocity, acceleration, gravity, drag/damping, springs and simple bounces for visual motion. This is not a general physics simulation (rigid-body solvers and collision worlds remain deferred).
+- **Shaders:** custom fragment effects via the rendering backend (for example Skia runtime effects), exposed as parameterized effects or presets rather than raw backend APIs, with a capability check and fallback.
+- **Impact-triggered explosions:** an effect can be started by an event such as an object reaching a position or completing a motion stage, raised by the engine's timeline or by the host app.
+- **Synchronized multi-stage animations:** stages (for example move, impact, explosion, settle) are composed sequentially and in parallel on one clock, with stage events and a single handle that can cancel or skip the whole composition.
+
 ## Critical engineering principles
 - **Framework-first:** Maintain an independent repository/package, demo app, tests, and public API. Do not put core engine logic into Belote-specific components.
 - **Own the engine semantics:** Implement scene/layer organization, scheduling, effects, resource lifecycle, and composition in our code. Reanimated and Skia are **infrastructure**, not the product.
