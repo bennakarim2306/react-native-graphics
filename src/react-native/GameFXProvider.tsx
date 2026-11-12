@@ -8,6 +8,8 @@ import { createEngine } from '../engine/engine';
 import type { Engine } from '../engine/engine';
 import { GameFXContext } from './context';
 import { createDefaultClock } from './defaultClock';
+import { createSkiaImageLoader } from './skiaImageLoader';
+import type { AssetManager, ImageLoader } from '../assets/assets';
 
 export interface GameFXProviderProps {
   readonly children?: ReactNode;
@@ -22,6 +24,17 @@ export interface GameFXProviderProps {
   /** Clock override, mainly for tests. Defaults to a `requestAnimationFrame` clock. */
   readonly clock?: Clock;
   readonly onError?: ErrorReporter;
+  /**
+   * Images to register by id (`{ hero: require('./hero.png') }`). Load them with
+   * `fx.assets.load([...])` or `fx.engine.assets.loadImage(id)`.
+   */
+  readonly assets?: Readonly<Record<string, unknown>>;
+  /** Soft budget for decoded images in bytes. Default 64 MiB. */
+  readonly assetBudget?: number;
+  /** Share an asset manager between providers instead of one per provider. */
+  readonly assetManager?: AssetManager;
+  /** Image loader override (tests, custom sources). Defaults to the Skia loader. */
+  readonly imageLoader?: ImageLoader;
 }
 
 /**
@@ -39,6 +52,10 @@ export function GameFXProvider({
   layers,
   clock,
   onError,
+  assets,
+  assetBudget,
+  assetManager,
+  imageLoader,
 }: GameFXProviderProps): ReactNode {
   const [engine, setEngine] = useState<Engine | null>(null);
 
@@ -50,7 +67,10 @@ export function GameFXProvider({
       ...(maxActiveEffects !== undefined ? { maxActiveEffects } : {}),
       ...(layers !== undefined ? { layers } : {}),
       ...(onError !== undefined ? { onError } : {}),
+      assets: assetManager ?? (assetBudget !== undefined ? { maxBytes: assetBudget } : {}),
     });
+    if (!assetManager) created.assets.setLoader(imageLoader ?? createSkiaImageLoader());
+    for (const [id, source] of Object.entries(assets ?? {})) created.assets.register(id, source);
     setEngine(created);
     return () => {
       created.dispose();

@@ -27,6 +27,8 @@ export default tseslint.config(
       'src/engine/**/*.ts',
       'src/particles/**/*.ts',
       'src/sprites/**/*.ts',
+      'src/graphics/**/*.ts',
+      'src/assets/**/*.ts',
       'src/effects/**/*.ts',
     ],
     rules: {

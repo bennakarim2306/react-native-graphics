@@ -19,6 +19,12 @@ export interface AttachmentState {
   readonly visible: boolean;
   /** False when the target was removed from the scene (but not destroyed). */
   readonly inScene: boolean;
+  /**
+   * Size of the target in its local units (shape bounds, else its explicit `size`, else 0),
+   * before `scaleX`/`scaleY`. Lets effects such as borders fit the target.
+   */
+  readonly width: number;
+  readonly height: number;
 }
 
 /** Why an attachment ended. */

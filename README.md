@@ -2,7 +2,7 @@
 
 An embeddable 2D game-effects engine for existing React Native apps. Mount one transparent overlay and trigger effects through a typed API, without writing animation internals. Game rules and app state stay in your app.
 
-> **Status: Phase 2.** The engine has a scene graph, tweens, keyframes, timelines with event markers, and one effect (`particle-burst`). The API is not stable yet and the package is not published. See [docs/PROGRESS.md](docs/PROGRESS.md) for what has and has not been verified. Phase 1 has run on an Android 17 emulator in Expo Go; the Phase 2 demo has been checked in the web build only so far, and nothing has run on iOS yet.
+> **Status: Phase 3.** The engine has a scene graph, tweens, keyframes and timelines with event markers (Phase 2), plus a graphics layer (images, paths, gradients, clipping, masks, blend modes, glow/blur/color effects, runtime shaders), sprite sheets, an asset manager, and effects anchored to ordinary React Native views. The API is not stable yet and the package is not published. Phases 1 and 2 have run on an Android 17 emulator in Expo Go; Phase 3 has been checked with tests, Android/iOS bundles and the web build only, and nothing has run on iOS yet. See [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## Requirements
 
@@ -35,13 +35,13 @@ import { Button, View } from 'react-native';
 
 export default function App() {
   return (
-    <View style={{ flex: 1 }}>
-      <GameFXProvider>
+    <GameFXProvider>
+      {/* The overlay covers this View: effects draw above it and never block touches. */}
+      <View style={{ flex: 1 }}>
         <Screen />
-        {/* Last child: draws above your UI and never blocks touches. */}
         <GameFXOverlay />
-      </GameFXProvider>
-    </View>
+      </View>
+    </GameFXProvider>
   );
 }
 
@@ -52,7 +52,7 @@ function Screen() {
       title="Celebrate"
       onPress={(e) => {
         const handle = fx.play('particle-burst', {
-          position: { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY },
+          position: fx.fromWindow({ x: e.nativeEvent.pageX, y: e.nativeEvent.pageY }),
           count: 60,
           duration: 900,
         });
@@ -63,7 +63,7 @@ function Screen() {
 }
 ```
 
-Positions are in points relative to the overlay's top-left corner. If the overlay fills the screen from the window origin, `pageX`/`pageY` can be used directly. See [docs/API.md](docs/API.md).
+Positions are in points relative to the overlay's top-left corner. `fx.fromWindow` converts window coordinates such as `pageX`/`pageY` using the overlay's measured position. See [docs/API.md](docs/API.md).
 
 ### Scene nodes, timelines and impact events
 
@@ -84,9 +84,39 @@ playback.onMarker('impact', () => {
 // playback.pause() / resume() / cancel() / stop() / finish() / seek(ms); await playback.finished
 ```
 
+### Sprites and assets
+
+```tsx
+<GameFXProvider assets={{ hero: require('./assets/hero-sheet.png') }}>…</GameFXProvider>
+
+const { status, assets } = useGameFXAssets(['hero']);   // 'loading' | 'loaded' | 'failed'
+const sheet = engine.createSpriteSheet({
+  image: 'hero',
+  grid: { frameWidth: 64, frameHeight: 64 },
+  animations: { run: { frames: { from: 0, to: 5 }, fps: 12, loop: true, events: [{ at: 3, name: 'step' }] } },
+});
+const hero = engine.createSprite({ sheet, x: 100, y: 200, smoothing: 'nearest' });
+const run = hero.play('run');                 // a Playback on the engine clock
+run.speed = 2;                                // pause(), resume(), stop(), onMarker('step', …)
+engine.animate(hero, { x: 300, rotation: 360, duration: 1000 }).play();
+```
+
+### Effects around an existing view
+
+```tsx
+<GameFXTarget id="buy-button">
+  <Pressable onPress={buy}><Text>Buy</Text></Pressable>
+</GameFXTarget>
+
+const handle = fx.attach('buy-button', 'fire-border', { intensity: 0.8, cornerRadius: 12 });
+// handle.cancel(); the effect also ends when the target unmounts
+```
+
+The border is drawn by the overlay around the view's measured rectangle; the view itself is not rendered by Skia. See the limitations in [docs/API.md](docs/API.md).
+
 ## Showcase app
 
-`example/` is a separate Expo SDK 58 app that installs the packed SDK tarball and imports only the public entry point. It has two tabs: **Particle effects** (Phase 1 bursts) and **Motion & timelines** (Phase 2: orbiting hierarchy, staggered keyframe loops, and a thrown card whose `impact` marker triggers a burst, with cancel, rewind, skip and pause buttons).
+`example/` is a separate Expo SDK 58 app that installs the packed SDK tarball and imports only the public entry point. It has three tabs: **Particles** (Phase 1 bursts), **Motion** (Phase 2: orbiting hierarchy, staggered keyframe loops, and a thrown card whose `impact` marker triggers a burst, with cancel, rewind, skip and pause buttons) and **Graphics** (Phase 3: A sprite animation with pause/resume/speed/stop, B hierarchical transforms, C 100 sprites per tap, D glow, shaders, clipping, grayscale and blur, E glow/energy/fire borders around a normal React Native button).
 
 ```sh
 npm ci
@@ -109,6 +139,7 @@ Requires Node 22 (see `.nvmrc`) and npm.
 | `npm test` | Jest: `core` (Node), `renderer` (real Skia via CanvasKit) and `react-native` projects |
 | `npm run build` | Emits ESM JavaScript and `.d.ts` to `lib/` |
 | `npm run check` | All of the above |
+| `npm run bench` | Engine-side frame cost in Node (not a device measurement, see `docs/PERFORMANCE.md`) |
 
 ## Documentation
 

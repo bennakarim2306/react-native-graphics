@@ -3,7 +3,10 @@ import { InvalidOptionError } from '../runtime/errors';
 import type { AttachmentState, DetachReason } from './attachment';
 import type { Matrix2D } from './matrix';
 import { AttachmentRecord, SceneNode } from './node';
-import type { NodeOptions, NodeShape, SceneHost } from './node';
+import type { NodeOptions, SceneHost } from './node';
+import type { NodeShape } from './shape';
+import type { BlendMode } from '../graphics/paint';
+import type { NodeEffect } from '../graphics/effects';
 
 /** One shape to draw, already in scene coordinates. */
 export interface SceneDrawItem {
@@ -12,12 +15,51 @@ export interface SceneDrawItem {
   /** World opacity in [0, 1]. */
   readonly opacity: number;
   readonly shape: NodeShape;
+  /** Blend mode of the shape. `normal` when the node composites through its own layer. */
+  readonly blendMode: BlendMode;
 }
 
-/** Drawable produced by the scene each frame: its visible shapes in draw order. */
+/**
+ * Opens a group around a node's own shape and its same-layer descendants: optionally clips to
+ * the node's shape outline, optionally draws into an offscreen layer that is filtered by
+ * `effects` and composited with `blendMode`.
+ */
+export interface SceneGroupCommand {
+  readonly op: 'begin-group';
+  readonly nodeId: number;
+  /** Clip outline in the node's local space, placed by `clipMatrix`. */
+  readonly clip: NodeShape | null;
+  readonly clipMatrix: Matrix2D;
+  /** True when the group needs an offscreen layer (effects, group flag or a layer blend mode). */
+  readonly layer: boolean;
+  readonly effects: readonly NodeEffect[];
+  readonly blendMode: BlendMode;
+}
+
+/** Display-list command. Every `begin-group` is closed by an `end-group`. */
+export type SceneCommand =
+  | { readonly op: 'draw'; readonly item: SceneDrawItem }
+  | SceneGroupCommand
+  | { readonly op: 'end-group'; readonly nodeId: number };
+
+/** Drawable produced by the scene each frame. */
 export interface SceneDrawable extends Drawable {
   readonly kind: 'scene';
+  /** Engine time in ms, used for animated (shader) fills. */
+  readonly time: number;
+  /** Visible shapes in draw order (without grouping information). */
   readonly items: readonly SceneDrawItem[];
+  /** Display list: shapes plus clip and layer groups, in draw order. Renderers draw this. */
+  readonly commands: readonly SceneCommand[];
+}
+
+function usesShader(shape: NodeShape): boolean {
+  if (shape.type === 'image') return false;
+  const fill = shape.fill;
+  return (
+    (typeof fill === 'object' && fill.type === 'shader') ||
+    (shape.stroke !== undefined && typeof shape.stroke.fill === 'object' && shape.stroke.fill.type === 'shader')
+  );
 }
 
 export function isSceneDrawable(drawable: Drawable): drawable is SceneDrawable {
@@ -42,6 +84,7 @@ export class Scene implements SceneHost {
   private dirty = true;
   private readonly records = new Set<AttachmentRecord>();
   private disposed = false;
+  private animated = false;
 
   constructor(
     options: SceneOptions = {},
@@ -95,6 +138,17 @@ export class Scene implements SceneHost {
     return node;
   }
 
+  /**
+   * @internal Adds a node built outside `createNode` (for example a sprite) to `parent` or the
+   * root; null leaves it detached.
+   */
+  insert<T extends SceneNode>(node: T, parent: SceneNode | null | undefined): T {
+    if (this.disposed) throw new InvalidOptionError('The scene has been disposed.');
+    const target = parent === undefined ? this.root : parent;
+    if (target) target.addChild(node);
+    return node;
+  }
+
   /** Number of nodes connected to the root, excluding the root. */
   get nodeCount(): number {
     let count = -1;
@@ -116,35 +170,82 @@ export class Scene implements SceneHost {
 
   /** Visible shapes in draw order. */
   drawItems(): SceneDrawItem[] {
-    const buckets = new Map<string, SceneDrawItem[]>();
+    return this.drawable().items as SceneDrawItem[];
+  }
+
+  /**
+   * True when the last drawable contained a shader fill, which changes with time and therefore
+   * needs a new frame even when nothing else moves.
+   */
+  get hasAnimatedContent(): boolean {
+    return this.animated;
+  }
+
+  /** The scene as one drawable: display list plus the flat list of shapes. */
+  drawable(time = 0): SceneDrawable {
+    const buckets = new Map<string, SceneCommand[]>();
+    const bucketFor = (layer: string): SceneCommand[] => {
+      let bucket = buckets.get(layer);
+      if (!bucket) {
+        bucket = [];
+        buckets.set(layer, bucket);
+      }
+      return bucket;
+    };
+    let animated = false;
     const visit = (node: SceneNode, opacity: number, layer: string): void => {
       if (!node.visible) return;
       const worldOpacity = opacity * Math.min(1, Math.max(0, node.opacity));
       if (worldOpacity <= 0) return;
       const nodeLayer = node.layer ?? layer;
+      const bucket = bucketFor(nodeLayer);
       const shape = node.shape;
+      const effects = node.effects;
+      const needsLayer = effects.length > 0 || node.group;
+      const clip = node.clipChildren && shape ? shape : null;
+      const grouped = needsLayer || clip !== null;
+      if (grouped) {
+        bucket.push({
+          op: 'begin-group',
+          nodeId: node.id,
+          clip,
+          clipMatrix: node.worldMatrix,
+          layer: needsLayer,
+          effects,
+          blendMode: needsLayer ? node.blendMode : 'normal',
+        });
+      }
       if (shape) {
-        let bucket = buckets.get(nodeLayer);
-        if (!bucket) {
-          bucket = [];
-          buckets.set(nodeLayer, bucket);
-        }
-        bucket.push({ nodeId: node.id, matrix: node.worldMatrix, opacity: worldOpacity, shape });
+        if (usesShader(shape)) animated = true;
+        bucket.push({
+          op: 'draw',
+          item: {
+            nodeId: node.id,
+            matrix: node.worldMatrix,
+            opacity: worldOpacity,
+            shape,
+            blendMode: needsLayer ? 'normal' : node.blendMode,
+          },
+        });
       }
       const children = node.children;
-      if (children.length === 0) return;
-      const sorted = [...children].sort((a, b) => a.zIndex - b.zIndex || a.order - b.order);
-      for (const child of sorted) visit(child, worldOpacity, nodeLayer);
+      if (children.length > 0) {
+        const sorted = [...children].sort((a, b) => a.zIndex - b.zIndex || a.order - b.order);
+        for (const child of sorted) visit(child, worldOpacity, nodeLayer);
+      }
+      if (grouped) bucket.push({ op: 'end-group', nodeId: node.id });
     };
     visit(this.root, 1, this.root.layer ?? 'default');
+    const commands: SceneCommand[] = [];
     const items: SceneDrawItem[] = [];
-    for (const layer of this.layerNames) items.push(...(buckets.get(layer) ?? []));
-    return items;
-  }
-
-  /** The scene as one drawable. */
-  drawable(): SceneDrawable {
-    return { kind: 'scene', items: this.drawItems() };
+    for (const layer of this.layerNames) {
+      for (const command of buckets.get(layer) ?? []) {
+        commands.push(command);
+        if (command.op === 'draw') items.push(command.item);
+      }
+    }
+    this.animated = animated;
+    return { kind: 'scene', time, items, commands };
   }
 
   get attachmentCount(): number {
@@ -159,6 +260,7 @@ export class Scene implements SceneHost {
       const { offset, inheritRotation = true, inheritScale = true } = record.options;
       const point = node.localToWorld(offset ?? { x: 0, y: 0 });
       const scale = inheritScale ? node.getWorldScale() : { scaleX: 1, scaleY: 1 };
+      const bounds = node.getLocalBounds();
       const state: AttachmentState = {
         time,
         x: point.x,
@@ -169,6 +271,8 @@ export class Scene implements SceneHost {
         opacity: node.worldOpacity,
         visible: node.worldVisible,
         inScene: node.inScene,
+        width: bounds?.width ?? 0,
+        height: bounds?.height ?? 0,
       };
       try {
         record.attachment.update(state);

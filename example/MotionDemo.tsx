@@ -2,13 +2,13 @@
  * Phase 2 demo: scene graph, hierarchical transforms, tweens, keyframes, timelines and
  * markers, all driven by the engine through the public `react-native-graphics` API.
  *
- * Scene nodes are drawn by the same overlay as the particle effects. Their coordinates are
- * overlay pixels, so the stage area is measured in window coordinates.
+ * Scene nodes are drawn by the same overlay as the particle effects. The stage is a
+ * `GameFXTarget`: the demo's group node is a child of the stage's proxy node, so it stays in
+ * place when the overlay or the stage moves.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ComponentRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { useGameFX } from 'react-native-graphics';
+import { GameFXTarget, useGameFX } from 'react-native-graphics';
 import type { Engine, Playback, SceneNode } from 'react-native-graphics';
 
 interface Stage {
@@ -28,6 +28,7 @@ interface DemoScene {
 }
 
 const CARD_HEIGHT = 64;
+const STAGE_ID = 'motion-stage';
 
 /** At least one full turn, ending upright (a multiple of 360°) even after a cancelled throw. */
 function uprightAfterSpin(rotation: number): number {
@@ -35,10 +36,11 @@ function uprightAfterSpin(rotation: number): number {
 }
 
 /** Builds the scene inside the stage and starts the ambient loops. */
-function buildScene(engine: Engine, stage: Stage): DemoScene {
+function buildScene(engine: Engine, stage: Stage, parent: SceneNode): DemoScene {
   const { scene } = engine;
-  // One group node per demo, so cleanup is a single destroy().
-  const group = scene.createNode({ name: 'motion-demo', x: stage.x, y: stage.y });
+  // One group node per demo, so cleanup is a single destroy(). The parent is the stage's
+  // proxy node (its origin is the stage centre), so the group starts at the stage's top-left.
+  const group = scene.createNode({ name: 'motion-demo', parent, x: stage.x, y: stage.y });
 
   // Hierarchical transforms: a sun with an orbiting planet that has its own moon.
   const sun = scene.createNode({
@@ -109,7 +111,6 @@ function buildScene(engine: Engine, stage: Stage): DemoScene {
 export function MotionDemo() {
   const fx = useGameFX();
   const engine = fx.engine;
-  const stageRef = useRef<ComponentRef<typeof View>>(null);
   const [stage, setStage] = useState<Stage | null>(null);
   const demo = useRef<DemoScene | null>(null);
   const throwPlayback = useRef<Playback | null>(null);
@@ -120,15 +121,26 @@ export function MotionDemo() {
     setLog((lines) => [line, ...lines].slice(0, 6));
   }, []);
 
-  const measure = useCallback(() => {
-    stageRef.current?.measureInWindow((x, y, width, height) => {
-      if (width > 0 && height > 0) setStage({ x, y, width, height });
+  // Rebuild when the stage size changes (for example on rotation); moves need no rebuild.
+  useEffect(() => {
+    if (!engine) return undefined;
+    const sync = (width: number, height: number) => {
+      if (width <= 0 || height <= 0) return;
+      setStage((current) =>
+        current?.width === width && current.height === height ? current : { x: -width / 2, y: -height / 2, width, height },
+      );
+    };
+    const layout = engine.targets.layout(STAGE_ID);
+    if (layout) sync(layout.width, layout.height);
+    return engine.targets.on('layout', (e) => {
+      if (e.id === STAGE_ID) sync(e.layout.width, e.layout.height);
     });
-  }, []);
+  }, [engine]);
 
   useEffect(() => {
-    if (!engine || !stage) return undefined;
-    const built = buildScene(engine, stage);
+    const parent = engine?.targets.node(STAGE_ID);
+    if (!engine || !stage || !parent) return undefined;
+    const built = buildScene(engine, stage, parent);
     demo.current = built;
     return () => {
       // Cancelling first keeps "end" events honest; destroy() removes every node of the demo.
@@ -218,9 +230,9 @@ export function MotionDemo() {
 
   return (
     <View style={styles.container}>
-      <View ref={stageRef} style={styles.stage} onLayout={measure}>
+      <GameFXTarget id={STAGE_ID} style={styles.stage}>
         <Text style={styles.stageLabel}>Scene graph stage</Text>
-      </View>
+      </GameFXTarget>
       <View style={styles.row}>
         {button('Throw card', throwCard, styles.primary)}
         {button('Cancel throw', () => throwPlayback.current?.cancel(), styles.danger)}

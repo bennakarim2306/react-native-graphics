@@ -1,6 +1,6 @@
 # Architecture
 
-Status: **Phase 2.** Implemented: `runtime` (clocks, local timers, seeded RNG, events, effect contract), `animation` (easing, tweens, keyframes, timelines, playbacks), `scene` (scene graph, transforms, layers, attachments, host-view binding contract), `engine` (the runtime that ties them together), `particles` (burst simulation), `effects` (`particle-burst`), `renderer/skia` (scene shapes and particles) and `react-native` (provider, overlay, hook). `sprites` is planned for Phase 3. Open decisions are listed in [PROGRESS.md](PROGRESS.md).
+Status: **Phase 3.** Implemented: `runtime` (clocks, local timers with rate, seeded RNG, events, effect contract), `animation` (easing, tweens, keyframes, timelines, playbacks with speed), `scene` (scene graph, transforms, layers, shapes, display list, clipping, attachments, host-view targets), `graphics` (paints, gradients, paths, shaders, node effects, blend modes), `assets` (image cache), `sprites` (sheets, frame animations, sprite nodes), `engine` (the runtime that ties them together), `particles` (burst simulation), `effects` (`particle-burst`, `glow-border`, `energy-border`, `fire-border`), `renderer/skia` (the Skia adapter) and `react-native` (provider, overlay, targets, hooks, Skia image loader). Open decisions are listed in [PROGRESS.md](PROGRESS.md).
 
 ## What the product is
 
@@ -17,20 +17,22 @@ One package to start, with internal modules. Arrows point to what a module may i
                |         \
                |          src/renderer/skia   (draws a scene snapshot; owns native graphics resources)
                |         /
-   src/effects (typed registry, presets, parameter validation)
+   src/effects (typed registry, presets, parameter validation, border effects)
         |            \
-   src/particles   src/sprites   (emitters, lifetimes, atlases, frame playback)
+   src/particles   src/sprites   (burst simulation; sheets, frame animations, sprite nodes)
         |            /
-   src/engine (Engine: owns scene, playbacks, effects; frame loop; pause/resume/reset/dispose)
+   src/engine (Engine: owns scene, targets, assets, playbacks, effects; frame loop; lifecycle)
         |            \
-   src/scene  (nodes, parent/child transforms, layers, draw order, opacity, bounds, attachments)
-        |
+   src/scene  (nodes, transforms, layers, shapes, display list, clipping, attachments, targets)
+        |     \
+        |      src/graphics (paints, gradients, PathData, shaders, node effects, blend modes)
+        |      src/assets   (AssetManager: ids, loading, dedupe, refcounts, LRU budget, disposal)
    src/animation (easing, tweens, keyframes, timelines, markers, playbacks)
         |
    src/runtime   (clocks, local timers, emitter, errors, seeded RNG, effect contract)
 ```
 
-`effects` and `particles` depend only on `runtime` (and `scene` for the `Point` type). `engine` depends on all engine modules but on nothing from React, React Native or Skia.
+`graphics` and `assets` depend only on `runtime` (and `scene` for the `Point` type). `effects` and `particles` depend on `runtime`, `scene` and `graphics`. `engine` depends on all engine modules but on nothing from React, React Native or Skia.
 
 | Module | Pure TS, no React/RN/Skia? | First needed in |
 | --- | --- | --- |
@@ -39,12 +41,14 @@ One package to start, with internal modules. Arrows point to what a module may i
 | `scene` | Yes | **Phase 2 (done)** |
 | `engine` | Yes | **Phase 2** (moved out of `runtime`, extended) |
 | `particles` | Yes (simulation only) | **Phase 1 (burst done)**, Phase 3 |
-| `sprites` | Yes (frame math, atlas metadata) | Phase 3 |
+| `graphics` | Yes (descriptions only; Skia objects are made by the renderer) | **Phase 3 (done)** |
+| `assets` | Yes (platform decoding is an injected `ImageLoader`) | **Phase 3 (done)** |
+| `sprites` | Yes (frame math, sheet metadata, sprite nodes) | **Phase 3 (done)** |
 | `effects` | Yes | **Phase 1 (`particle-burst` done)**, Phase 4 |
 | `renderer/skia` | No: the only module importing `@shopify/react-native-skia` drawing APIs | **Phase 1 (done)** |
 | `react-native` | No: host integration | **Phase 1 (done)** |
 
-The "pure" column is **enforced** by an ESLint `no-restricted-imports` rule in `eslint.config.mjs`. It rejects imports of `react`, `react-native`, `react-native-*`, `@shopify/*` and of the `renderer/` and `react-native/` folders from the seven engine modules (`runtime`, `animation`, `scene`, `engine`, `particles`, `sprites`, `effects`).
+The "pure" column is **enforced** by an ESLint `no-restricted-imports` rule in `eslint.config.mjs`. It rejects imports of `react`, `react-native`, `react-native-*`, `@shopify/*` and of the `renderer/` and `react-native/` folders from the nine engine modules (`runtime`, `animation`, `scene`, `engine`, `particles`, `sprites`, `graphics`, `assets`, `effects`).
 
 Belote Tunisienne, or any other game, is an external consumer. Card-specific presets and the mapping from game events to effects live in that consumer, or in an optional adapter in Phase 6.
 
@@ -92,18 +96,57 @@ Consequences and limits:
 - Hierarchy: `createNode({ parent })`, `addChild` (reparenting, cycle checks), `removeChild`/`removeFromParent` (the node stays alive and can be re-added), `destroy()` (recursive; attachments end with `targetDestroyed`; animations skip destroyed nodes).
 - Draw order: layers from bottom to top (`scene.setLayers`), then depth-first within a layer, siblings by `zIndex` then insertion order. Hidden and fully transparent subtrees are skipped. The renderer receives a flat `scene` drawable (`{ matrix, opacity, shape }` per item), never the graph.
 - Opacity is multiplied per item. Group opacity with an offscreen layer (so overlapping children do not show through each other) is not implemented.
+- Phase 3 extends nodes with `shape` types `ellipse`, `path` and `image`, paints (`fill`, `stroke`), `blendMode`, `effects`, `group`, `clipChildren` and an explicit `size`. The renderer now receives a **display list** (`commands`) next to the flat `items`; see "Graphics model".
+
+## Graphics model (Phase 3)
+
+The engine describes **what** to draw in its own types; only `renderer/skia` turns them into Skia objects. Nothing in `graphics`, `scene` or `sprites` imports Skia.
+
+- **Shapes** (`scene/shape.ts`): `rect` (corner radius), `circle`, `ellipse`, `path` (`PathData`) and `image` (an `ImageAsset`, optional source rect for sprite frames, drawn size, anchor, `smoothing`). Rect, circle, ellipse and path take `fill` and/or `stroke` (`color` stays as a shorthand).
+- **Paints** (`graphics/paint.ts`): `Fill = Color | LinearGradient | RadialGradient | ShaderFill`; `Stroke = { fill, width, cap, join }`. Gradients are in the shape's local coordinates. Validated when assigned.
+- **Paths** (`graphics/path.ts`): `PathData` is a renderer-independent builder (`moveTo`, `lineTo`, `quadTo`, `cubicTo`, `close`, `rect`, `ellipse`, `polygon` and stars). It exposes SVG path data and a `version`; the renderer converts it once per version (`Path.MakeFromSVGString`) and caches the result in a `WeakMap`.
+- **Shaders** (`graphics/shader.ts`): `defineShader({ name, source, uniforms, fallback })` treats SkSL as data. Uniforms are listed in declaration order; `time` (engine seconds) and `size` (shape bounds) are filled automatically. The renderer compiles each definition once (`RuntimeEffect.Make`), caches failures, reports them once, and then draws the `fallback` color. Built-ins: `energyShader`, `fireShader`. A scene that shows a shader fill reports `hasAnimatedContent`, which keeps the engine publishing frames while it is visible.
+- **Node effects** (`graphics/effects.ts`): `glow` (colored blurred copy under the content), `blur`, `drop-shadow` and `color-matrix` (helpers `grayscale`, `brightness`). They apply to a node and its subtree through an offscreen layer.
+- **Blend modes**: 16 names (`normal`, `multiply`, `screen`, `plus`, `dst-in`, ...). On a plain node they apply to its shape; on a node with a layer they composite the whole layer.
+- **Display list**: `scene.drawable(time)` returns `commands`: `draw` (one shape with world matrix, opacity and blend mode), `begin-group` (optional clip to the node's shape outline, optional layer with effects and blend mode) and `end-group`. A group contains the node's own shape and its descendants **on the same layer**; descendants on another layer are drawn in that layer and escape the group (documented limitation of mixing layers and groups).
+- **Clipping and masking**: `clipChildren` clips descendants to the node's shape outline (any shape, including rotated). Masks: a node with `group: true` and a child with `blendMode: 'dst-in'` whose fill covers the group (for example a gradient or an image with transparency) keeps only what the mask covers. Skia only blends inside the drawn geometry, so a small opaque mask shape does not erase the area outside it.
+
+### Renderer adapter
+
+`SkiaEffectsRenderer` executes the display list with `save`/`concat`/`restoreToCount`, `clipRect`/`clipRRect`/`clipPath`, `saveLayer` with an image filter and blend mode, `drawImageRectOptions` (linear or nearest sampling), gradient shaders (cached per fill object), runtime shaders (`makeShader` with uniforms each frame), and composed image filters (`MakeDropShadow`, `MakeBlur`, `MakeColorFilter`). Unsupported drawables, failed shader compilation and unloaded images are reported once each through an `onWarning` callback and skipped (or drawn with the fallback color). `capabilities` lists drawable kinds, shapes, runtime-shader support, node effects, blend modes, gradients and clipping.
+
+## Assets (Phase 3)
+
+`engine.assets` is an `AssetManager`. Ids are stable strings. `register(id, source)` records a source; `load([...])`/`loadImage(id)` decode through an injected `ImageLoader` (React Native: `createSkiaImageLoader`, which resolves `require()` assets with `Image.resolveAssetSource` and decodes with `Skia.Image.MakeImageFromEncoded`).
+
+- Concurrent loads of the same id share one request; loaded images are cached.
+- Failures reject with `AssetLoadError`, set the state to `error`, emit an `error` event and can be retried.
+- Holders (`image` shapes, sprites) `retain`/`release` the asset. A node retains while it shows the image and releases on shape change or destroy.
+- `unload(id)` refuses while retained (unless `force`). Loads that finish after an unload are discarded and freed.
+- A soft byte budget (default 64 MiB, `width × height × 4`) evicts unreferenced images, least recently used first. Retained images are never evicted.
+- `dispose()` frees everything. An engine disposes the manager it created; a manager passed in (`assets: manager`) is shared and stays alive.
+
+## Sprites (Phase 3)
+
+- `SpriteSheet`: frames from a grid (frame size, count, margin, spacing) or explicit rectangles, plus named animations (`frames` list or range, `fps` or per-frame `frameDuration`, `loop`, `direction` `forward | reverse | alternate`, frame `events`). Immutable and shareable.
+- `Sprite extends SceneNode`: draws its current `frame` as an `image` shape (cached per frame, so frame changes do not allocate or touch refcounts). It moves, rotates, scales, fades, nests and attaches like any node.
+- `FrameAnimation extends Playable`: sets `sprite.frame` from local time. It runs through `engine.run` like any tween, so it uses **the engine clock** (no second clock), supports pause, resume, `speed`, seek, finish, loops and timelines, and frame events are markers (delivered at their exact time even when frames are skipped).
+- `sprite.play(name, { speed, repeat, delay })` replaces the sprite's previous `play` animation. Destroying the sprite cancels it and releases the image.
+- **Playback speed**: `LocalTimer` gained a rate (`base + (now − anchor) × rate`, re-anchored on change), so `playback.speed` changes are continuous and work for every playable.
 
 ## Effect attachments and React Native views
 
 **Attachments (implemented as an interface):** `node.attach(attachment, { offset, inheritRotation, inheritScale })` returns a handle. Every frame, after animations, the engine calls `attachment.update(state)` with the world position of the attachment point (the offset is in the node's local space, so it rotates and scales with the node), world rotation, scale, opacity, visibility and whether the node is still in the scene. `onDetach(reason)` is called exactly once with `detached`, `targetDestroyed` or `engineDisposed`. What to do when the target is hidden or leaves the scene is the attachment's decision (for example stop emitting and let particles finish). Phase 3 effects (trails, fire, glow emitters) will implement `Attachment`, so they follow moving and rotating targets without new engine concepts.
 
-**React Native views (designed, not implemented):** the engine cannot capture or transform arbitrary native views, and does not try to. Instead, a view is represented in the scene by a **proxy node** that mirrors its layout, and effects attach to that node. Phase 2 provides the contract (`HostViewBinding`, `HostLayout`, `createHostViewBinding`, `syncNodeToLayout`). The planned React Native side:
+**React Native views (implemented in Phase 3):** the engine cannot capture or transform arbitrary native views, and does not try to. A view is represented in the scene by a **proxy node** that mirrors its layout, and effects attach to that node.
 
-1. A hook such as `useGameFXTarget(ref)` creates a proxy node and measures the view with `measureInWindow`, converting window coordinates to overlay coordinates by subtracting the overlay's own window offset. It re-measures on `onLayout`, orientation change and scroll events of a known scroll container.
-2. For views moved by the app with Reanimated, the binding would read the same shared values (translate, rotate, scale) instead of measuring every frame. Doing that on the UI thread requires the UI-thread frame path from the thread-model notes; until then it is sampled on the JS thread.
-3. When the view unmounts, the binding is disposed: the proxy node is destroyed and attachments end with `targetDestroyed`.
+1. `engine.targets` (`TargetRegistry`, platform-independent) maps ids to proxy nodes. It stores window rectangles and the overlay's window origin and converts between them, so a target is re-synced when either moves. The proxy's origin is the view's centre and its `size` is the view's size; attachments receive `width`/`height`.
+2. `<GameFXTarget id>` wraps its children in a `View`, registers the id on mount, measures with `measureInWindow` on layout, on `fx.remeasure()` (call it from `onScroll`), and optionally on every engine frame (`trackEveryFrame`, for transform animations). `rotation`/`scale` props pass a known transform, because measurement only returns an axis-aligned box.
+3. `<GameFXOverlay>` measures its own window origin on layout and sets it on the registry.
+4. `fx.attach(id, effect, params)` starts an effect with `target` set to the proxy node. When the view unmounts, the proxy node is destroyed and attached effects end (`targetDestroyed`).
+5. Scene nodes can be children of a proxy node, so engine content placed "inside" a view follows it.
 
-Effects drawn on top of a view are always drawn by the overlay; the view itself is never re-rendered by Skia. Effects that need the view's pixels (dissolve, distortion) would need an explicit snapshot mechanism and are out of scope until there is a decision for it.
+Limits: measurement is asynchronous, so a scrolled or animated view is followed with up to one frame of lag; `trackEveryFrame` costs one `measureInWindow` per frame per target. Reanimated-driven transforms are not read directly (a UI-thread path is not implemented). Effects drawn around a view are drawn by the overlay; the view itself is never rendered by Skia. Effects that need the view's pixels (dissolve, distortion) would need a snapshot (`Skia.Image.MakeImageFromViewTag` exists) and are not implemented.
 
 ## Coordinate spaces
 
@@ -111,8 +154,8 @@ Effects drawn on top of a view are always drawn by the overlay; the view itself 
 | --- | --- |
 | Canvas (scene/world) | Default. Density-independent points relative to the overlay's top-left corner, matching React Native layout units. Scene world coordinates are canvas coordinates |
 | Node-local | A node's own space: origin at its position, axes rotated and scaled with it. Converted with `localToWorld`/`worldToLocal`/`localToNode` |
-| Window | Values from `measureInWindow` or touch events. Converted to canvas space by subtracting the overlay's window offset |
-| Target-relative | An effect anchored to a host view (`ref`). The host view is measured and converted to canvas space. Re-measure on layout, scroll or rotation |
+| Window | Values from `measureInWindow` or touch events (`pageX`/`pageY`). Converted with `fx.fromWindow(point)`, which subtracts the overlay's measured window origin |
+| Target-relative | Children of a target's proxy node: origin at the centre of the host view (`<GameFXTarget id>`). Re-synced on layout, `remeasure` and overlay moves |
 
 Safe-area insets are exposed to effects as data. They are not applied silently, because a full-screen celebration may intentionally draw under the notch. Every public API that accepts a position states which space it uses.
 
@@ -120,7 +163,8 @@ Safe-area insets are exposed to effects as data. They are not applied silently, 
 
 - `<GameFXProvider>` owns the runtime, registry and lifecycle scope for its subtree.
 - `<GameFXOverlay>` (named `GameFXCanvas` in the Phase 0 proposal) is an absolutely positioned, transparent Skia canvas with `pointerEvents="none"` by default, so it never blocks the host app's touches. Interactive modes are opt-in.
-- `useGameFX()` returns the typed API (`play`, `cancelAll`, `activeCount`, `ready`, and `engine` for scene nodes, animations and timelines). Custom effects are registered through the provider's `effects` prop, scene layers through `layers`.
+- `useGameFX()` returns the typed API (`play`, `attach`, `remeasure`, `fromWindow`, `cancelAll`, `activeCount`, `ready`, `assets`, and `engine` for scene nodes, sprites, animations and timelines). Custom effects are registered through the provider's `effects` prop, scene layers through `layers`, images through `assets` (loaded with `useGameFXAssets`).
+- `<GameFXTarget id>` anchors effects to an ordinary view (see above).
 - Unmounting the provider cancels every playback and effect, destroys the scene (ending attachments), and stops frame callbacks. No effect or marker callback fires after unmount.
 - Reduced motion (`AccessibilityInfo`) and a quality setting are planned provider options (not in Phase 1).
 

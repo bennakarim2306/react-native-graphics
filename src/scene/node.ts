@@ -1,8 +1,16 @@
 import type { AnimationTarget } from '../animation/target';
+import { validateNodeEffect } from '../graphics/effects';
+import type { NodeEffect } from '../graphics/effects';
+import { validateBlendMode } from '../graphics/paint';
+import type { BlendMode } from '../graphics/paint';
 import { DisposedError, InvalidOptionError } from '../runtime/errors';
 import type { AttachOptions, Attachment, AttachmentHandle, DetachReason } from './attachment';
 import { applyToPoint, composeTransform, invert, multiply, rotationOf, scaleOf } from './matrix';
 import type { Matrix2D, Point } from './matrix';
+import { shapeBounds, validateShape } from './shape';
+import type { NodeShape } from './shape';
+
+export type { NodeShape } from './shape';
 
 /** Properties of a node that animations can drive. `scale` sets both axes. */
 export type NodeProperty = 'x' | 'y' | 'rotation' | 'scale' | 'scaleX' | 'scaleY' | 'opacity';
@@ -16,17 +24,6 @@ const NODE_PROPERTIES: ReadonlySet<string> = new Set<NodeProperty>([
   'scaleY',
   'opacity',
 ]);
-
-/** A simple built-in visual for a node, centred on the node's origin. */
-export type NodeShape =
-  | {
-      readonly type: 'rect';
-      readonly width: number;
-      readonly height: number;
-      readonly color: string;
-      readonly cornerRadius?: number;
-    }
-  | { readonly type: 'circle'; readonly radius: number; readonly color: string };
 
 export interface NodeOptions {
   readonly name?: string;
@@ -47,7 +44,27 @@ export interface NodeOptions {
   readonly zIndex?: number;
   /** Layer name; inherits the parent's layer when omitted. */
   readonly layer?: string;
+  /** What the node draws: rect, circle, ellipse, path or image. */
   readonly shape?: NodeShape;
+  /** How the node composites onto what is below it. Default `normal`. */
+  readonly blendMode?: BlendMode;
+  /**
+   * Filters applied to the node and its subtree (glow, blur, drop shadow, color matrix). The
+   * subtree is drawn into an offscreen layer that the filters process.
+   */
+  readonly effects?: readonly NodeEffect[];
+  /**
+   * Draws the subtree into its own layer so children's blend modes only mix inside the group.
+   * Use with a child whose blend mode is `dst-in` to mask the group. Default false.
+   */
+  readonly group?: boolean;
+  /** Clips the node's children to the node's shape outline. Default false. */
+  readonly clipChildren?: boolean;
+  /**
+   * Logical size in points, for nodes without a shape (for example a proxy that mirrors a React
+   * Native view). Used for bounds and passed to attachments.
+   */
+  readonly size?: { readonly width: number; readonly height: number };
   /** Parent node. Defaults to the scene root. Pass null to create a detached node. */
   readonly parent?: SceneNode | null;
 }
@@ -97,28 +114,6 @@ function finite(value: number, name: string): number {
   return value;
 }
 
-function validateShape(shape: NodeShape | undefined): NodeShape | undefined {
-  if (shape === undefined) return undefined;
-  if (shape.type === 'rect') {
-    if (!(shape.width >= 0 && shape.height >= 0 && Number.isFinite(shape.width) && Number.isFinite(shape.height))) {
-      throw new InvalidOptionError('A rect shape needs finite width and height >= 0.');
-    }
-    if (shape.cornerRadius !== undefined && !(shape.cornerRadius >= 0 && Number.isFinite(shape.cornerRadius))) {
-      throw new InvalidOptionError('cornerRadius must be a finite number >= 0.');
-    }
-  } else if ((shape.type as unknown) === 'circle') {
-    if (!(shape.radius >= 0 && Number.isFinite(shape.radius))) {
-      throw new InvalidOptionError('A circle shape needs a finite radius >= 0.');
-    }
-  } else {
-    throw new InvalidOptionError(`Unknown shape type "${String((shape as { type: unknown }).type)}".`);
-  }
-  if (typeof shape.color !== 'string' || shape.color.length === 0) {
-    throw new InvalidOptionError('A shape needs a color string.');
-  }
-  return shape;
-}
-
 let nextNodeId = 1;
 
 /**
@@ -141,6 +136,11 @@ export class SceneNode implements AnimationTarget<NodeProperty> {
   private z = 0;
   private ownLayer: string | undefined;
   private ownShape: NodeShape | undefined;
+  private blend: BlendMode = 'normal';
+  private nodeEffects: readonly NodeEffect[] = [];
+  private isGroup = false;
+  private clips = false;
+  private ownSize: { readonly width: number; readonly height: number } | null = null;
   private parentNode: SceneNode | null = null;
   private readonly childNodes: SceneNode[] = [];
   private isDestroyed = false;
@@ -166,7 +166,12 @@ export class SceneNode implements AnimationTarget<NodeProperty> {
     if (options.visible !== undefined) this.isVisible = options.visible;
     if (options.zIndex !== undefined) this.z = finite(options.zIndex, 'zIndex');
     if (options.layer !== undefined) this.layer = options.layer;
-    this.ownShape = validateShape(options.shape);
+    if (options.blendMode !== undefined) this.blendMode = options.blendMode;
+    if (options.effects !== undefined) this.effects = options.effects;
+    if (options.group !== undefined) this.isGroup = options.group;
+    if (options.clipChildren !== undefined) this.clips = options.clipChildren;
+    if (options.size !== undefined) this.size = options.size;
+    this.shape = options.shape;
   }
 
   get destroyed(): boolean {
@@ -283,8 +288,76 @@ export class SceneNode implements AnimationTarget<NodeProperty> {
   get shape(): NodeShape | undefined {
     return this.ownShape;
   }
+  /**
+   * Replaces the shape. An image shape retains its image asset while the node uses it, so the
+   * asset cache never frees an image that is on screen.
+   */
   set shape(value: NodeShape | undefined) {
-    this.ownShape = validateShape(value);
+    if (this.isDestroyed) throw new DisposedError(`Scene node ${this.name || String(this.id)}`);
+    const next = validateShape(value);
+    const previous = this.ownShape;
+    const nextImage = next?.type === 'image' ? next.image : undefined;
+    const previousImage = previous?.type === 'image' ? previous.image : undefined;
+    if (nextImage !== previousImage) nextImage?.retain();
+    this.ownShape = next;
+    if (nextImage !== previousImage) previousImage?.release();
+    this.changed();
+  }
+
+  get blendMode(): BlendMode {
+    return this.blend;
+  }
+  set blendMode(value: BlendMode) {
+    validateBlendMode(value);
+    if (this.blend === value) return;
+    this.blend = value;
+    this.changed();
+  }
+
+  get effects(): readonly NodeEffect[] {
+    return this.nodeEffects;
+  }
+  set effects(value: readonly NodeEffect[]) {
+    const list: unknown = value;
+    if (!Array.isArray(list)) throw new InvalidOptionError('effects must be an array.');
+    for (const effect of value) validateNodeEffect(effect);
+    this.nodeEffects = [...value];
+    this.changed();
+  }
+
+  get group(): boolean {
+    return this.isGroup;
+  }
+  set group(value: boolean) {
+    if (this.isGroup === value) return;
+    this.isGroup = value;
+    this.changed();
+  }
+
+  get clipChildren(): boolean {
+    return this.clips;
+  }
+  set clipChildren(value: boolean) {
+    if (this.clips === value) return;
+    this.clips = value;
+    this.changed();
+  }
+
+  /** Explicit logical size, or null. */
+  get size(): { readonly width: number; readonly height: number } | null {
+    return this.ownSize;
+  }
+  set size(value: { readonly width: number; readonly height: number } | null) {
+    if (value !== null) {
+      if (!(Number.isFinite(value.width) && value.width >= 0 && Number.isFinite(value.height) && value.height >= 0)) {
+        throw new InvalidOptionError('Node size needs finite width and height >= 0.');
+      }
+      if (this.ownSize?.width === value.width && this.ownSize.height === value.height) return;
+      this.ownSize = { width: value.width, height: value.height };
+    } else {
+      if (this.ownSize === null) return;
+      this.ownSize = null;
+    }
     this.changed();
   }
 
@@ -365,6 +438,10 @@ export class SceneNode implements AnimationTarget<NodeProperty> {
     for (const record of [...this.attachments]) record.end(reason);
     const parent = this.parentNode;
     this.detachFromParent();
+    const shape = this.ownShape;
+    this.ownShape = undefined;
+    if (shape?.type === 'image') shape.image.release();
+    this.onDestroy();
     this.isDestroyed = true;
     if (parent) parent.changed();
   }
@@ -436,14 +513,18 @@ export class SceneNode implements AnimationTarget<NodeProperty> {
     return true;
   }
 
-  /** Bounds of the shape in local coordinates, or null without a shape. */
+  /**
+   * Bounds of the shape in local coordinates (strokes excluded), else of the explicit `size`
+   * centred on the origin, else null.
+   */
   getLocalBounds(): Bounds | null {
     const shape = this.ownShape;
-    if (!shape) return null;
-    if (shape.type === 'circle') {
-      return { x: -shape.radius, y: -shape.radius, width: shape.radius * 2, height: shape.radius * 2 };
+    if (shape) return shapeBounds(shape);
+    if (this.ownSize) {
+      const { width, height } = this.ownSize;
+      return { x: -width / 2, y: -height / 2, width, height };
     }
-    return { x: -shape.width / 2, y: -shape.height / 2, width: shape.width, height: shape.height };
+    return null;
   }
 
   /** Axis-aligned bounds of the transformed shape in scene coordinates, or null without a shape. */
@@ -494,6 +575,16 @@ export class SceneNode implements AnimationTarget<NodeProperty> {
 
   // --- Internals ------------------------------------------------------------------------
 
+  /** Hook for subclasses (sprites) to release what they hold. Called once, before destruction completes. */
+  protected onDestroy(): void {
+    // Nothing by default.
+  }
+
+  /** @internal Marks the scene dirty; for subclasses that change what they draw. */
+  protected changed(): void {
+    if (!this.isDestroyed) this.host?.markDirty();
+  }
+
   private *selfAndAncestors(): Generator<SceneNode> {
     yield this;
     for (let node = this.parentNode; node; node = node.parentNode) yield node;
@@ -525,10 +616,6 @@ export class SceneNode implements AnimationTarget<NodeProperty> {
     if (this.worldCache === null) return;
     this.worldCache = null;
     for (const child of this.childNodes) child.invalidateWorld();
-  }
-
-  private changed(): void {
-    if (!this.isDestroyed) this.host?.markDirty();
   }
 
   private assertAlive(): void {

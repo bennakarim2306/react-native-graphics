@@ -5,7 +5,156 @@
 | 0. Repository audit and migration | **Done** (2026-11-11, merged in PR #1) |
 | 1. Working engine prototype (particle burst) | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not yet verified. See below |
 | 2. Runtime, scene graph and animation orchestration | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not verified. See below |
-| 3 to 6 | Not started |
+| 3. Graphics engine, sprites, assets, RN anchoring | **Implemented, awaiting device check** (2026-11-12). Tests, bundles and web build pass; not yet run on Android or iOS. See below |
+| 4 to 6 | Not started |
+
+## Phase 3: Graphics engine, sprites, assets and React Native anchoring (2026-11-12)
+
+### Status
+
+**Implemented and tested in the container; not yet verified on a device.** Every acceptance criterion below is backed by automated tests that were run, by Android and iOS bundles that built, and by genuine screenshots of the web build (Skia through CanvasKit in Chromium). **No Phase 3 code has run on an Android emulator, a physical device or iOS yet.** The owner's Android 17 emulator check is the remaining step before Phase 3 can be called done on Android, as with Phases 1 and 2.
+
+Step 1 (baseline): CLAUDE.md and PROGRESS.md were read, Phase 2 was intact (160 tests passing), installed versions are unchanged (Expo SDK 58, RN 0.88.1, Skia 2.14.0, Reanimated 4.7.1, Worklets 0.13). Phase 2 gaps that Phase 3 needed and closed: no images or paths in the scene, no group compositing (opacity per shape only), no built-in attachment effect, no view measurement. No working component was replaced; the Skia renderer was rewritten internally because it only knew rects and circles, and its public surface (`createSkiaEffectsRenderer`, capabilities) was kept.
+
+| # | Acceptance criterion | Evidence |
+| --- | --- | --- |
+| 1 | Reusable 2D rendering backend | Engine-owned display list (`draw` / `begin-group` / `end-group` commands) built from the scene graph in `src/scene/scene.ts`, renderer-independent graphics types in `src/graphics`, Skia adapter maps them. `displayList.test.ts` checks the commands in Node; 11 new renderer tests rasterize them with real Skia (CanvasKit) and check pixels |
+| 2 | Sprites created, rendered, transformed, animated | `Sprite` is a `SceneNode` (`src/sprites/sprite.ts`). `sprites.test.ts` covers creation, removal, frames, parent/child transforms, moving/rotating/scaling while animating; renderer test draws sprite frames with nearest and linear sampling |
+| 3 | Sprite sheet animations | `SpriteSheet` with grid or explicit frames, per-frame durations, fps, loop, forward/reverse/alternate, frame events. Tests for frame progression, speed, loop, pause/resume, completion, reverse, events, timelines, 100 concurrent sprites |
+| 4 | Asset loading and cleanup | `AssetManager` (`src/assets/assets.ts`): register, load, preload, dedupe, state, errors, retain/release, LRU budget, dispose. 16 tests including 200 load/unload cycles with a leak counter |
+| 5 | Renderer integrates with the runtime | Sprite animations are ordinary `Playable`s run by `engine.run` (one clock, `Playback` with `speed`); shader time is engine time; the engine keeps frames coming only while shaders are visible (`engine/graphics.test.ts`) |
+| 6 | Scene graph controls graphical objects | Layers, zIndex, hierarchy, opacity groups, clipping, masks, blend modes and effects are node properties (`displayList.test.ts`, `scene.test.ts`, renderer pixel tests) |
+| 7 | At least two demonstrable effects | Implemented: glow, blur, drop shadow, color matrix (`grayscale`, `brightness` helpers), two built-in runtime shaders (`energyShader`, `fireShader`) plus `defineShader` with typed uniforms, linear and radial gradients, blend modes, clipping and masks. Built-in attachment effects: `glow-border`, `energy-border`, `fire-border`. Pixel tests for each kind; screenshots in Demo D and E |
+| 8 | Showcase demonstrates the systems | New **Graphics** tab (`example/GraphicsDemo.tsx`) with Demos A to E, public API only. Type-checks, bundles for Android and iOS, runs on web (screenshots) |
+| 9 | Anchoring to RN components demonstrated | `GameFXTarget` + `engine.targets` + `fx.attach`. Demo E: a normal `Pressable` gets a glow, energy or fire border that follows it when it moves. The Motion tab now anchors its stage the same way. `GameFXTarget.test.tsx` covers mount, measure, remeasure, unmount, 50 mount/unmount cycles |
+| 10 | Automated tests pass | **21 suites, 246 tests, 0 failures** |
+| 11 | TypeScript and build checks pass | typecheck, lint, build, pack, example tsc, Android and iOS exports, web export: all pass (table below) |
+| 12 | Documentation matches the implementation | `ARCHITECTURE.md`, `API.md`, this file, `README.md`, `PERFORMANCE.md` updated |
+| 13 | Unverified behaviour identified | See "Not verified" and "Known limitations" |
+
+### What was built
+
+**Graphics model** (`src/graphics`, `src/scene/shape.ts`, renderer-independent):
+- Shapes: `rect` (rounded corners), `circle`, `ellipse`, `path` and `image`, each with optional fill and stroke.
+- Paths: an engine `PathData` builder (`moveTo`, `lineTo`, `quadTo`, `cubicTo`, `close`, plus `rect`, `ellipse` and `polygon` helpers, where `innerRadius` makes a star) with `getBounds()` and `toSvg()`. Skia types never appear in it.
+- Paints: solid colors, linear and radial gradients with stops, and shader fills (`ShaderDefinition`: SkSL source, typed uniforms, fallback color). Strokes with width, cap and join.
+- Built-in shaders: `energyShader` and `fireShader` (implemented, pixel-tested); `defineShader` for custom ones. The engine supplies `time` and the node size automatically.
+- Node effects (rendered through an offscreen layer): `glow`, `blur`, `drop-shadow`, `color-matrix` (helpers `grayscale`, `brightness`).
+- Blend modes: `normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`, `exclusion`, `plus`, and `src-in` / `dst-in` / `dst-out` for masks.
+- Node compositing: `group: true` composites a subtree in its own layer (so opacity applies once and a child with `dst-in` masks the group), and `clipChildren` clips descendants to the node's shape (rect, rounded rect, circle, ellipse or path, under any rotation).
+- Capabilities reported by the renderer: shape kinds, runtime shaders, node effects, blend modes, gradients, clipping. Unsupported features fall back (shader to its fallback color) and raise a one-time `onWarning`.
+
+**Display list** (`scene.drawable(time)`): one traversal per frame builds `draw` items with world matrices and world opacity, and wraps a node in `begin-group` / `end-group` only when it needs a layer (effects, blend mode, group opacity) or a clip. Layer buckets keep the Phase 2 layer order.
+
+**Skia adapter** (`src/renderer/skia/SkiaEffectsRenderer.ts`): renders the display list into an `SkPicture` per frame; caches compiled runtime effects, gradients and paths; `saveLayer` with image filters for effects; `drawImageRect` with linear or nearest sampling for sprite frames; skips images that are not loaded yet.
+
+**Assets** (`src/assets`): `AssetManager` with an injected `ImageLoader` (the React Native one decodes with Skia; tests use a fake loader with no algorithm mocked). Stable string ids, `register`, `load` / `preload` returning a typed map, concurrent loads deduplicated, states `registered | loading | loaded | failed | disposed`, `AssetLoadError` with the cause, retain/release reference counts, LRU eviction of unreferenced images above `maxBytes` (default 64 MiB), `unload`, `dispose`. Nodes retain their image while they show it and release it when their shape changes or they are destroyed.
+
+**Sprites** (`src/sprites`): `SpriteSheet` (grid with margin, spacing and count, or explicit frames; default anchor; named animations with `frames`, `fps` or per-frame `durations`, `loop`, `direction`, frame `events`), `Sprite` (a scene node: transform, anchor, size, smoothing, draw order, children), `sprite.play(name, { speed, repeat, delay })` returning a `Playback`, `sprite.animation(...)` for timelines, `stopAnimation`, frame events as markers. Frame shapes are cached per frame so playing an animation allocates nothing.
+
+**React Native anchoring** (`src/scene/targets.ts`, `src/react-native/GameFXTarget.tsx`):
+- `engine.targets` stores each target's window rect and the overlay's window origin, and keeps one proxy scene node per target at the view's centre with its size, rotation and scale. Effects and nodes parented to the proxy follow the view.
+- `<GameFXTarget id>` wraps any view without changing its layout or touches, registers on mount, measures with `measureInWindow` on layout, on `fx.remeasure()` and optionally every frame (`trackEveryFrame`), and unregisters on unmount, which ends attached effects with reason `targetDestroyed`.
+- `fx.attach(id | node, effect, params)` attaches an effect that follows the target; `fx.fromWindow(point)` converts touch coordinates to overlay space.
+- The overlay measures its own window origin, so it no longer has to start at the window origin.
+- What is **not** possible and not attempted: rendering a React Native view inside Skia as a texture (no snapshot). Effects are drawn around views, not into them.
+
+**Showcase** (`example/`): a third **Graphics** tab with five demos (all public API):
+- **A · Sprite animation:** an 8-frame coin sheet; start, pause, resume, stop, and speed buttons that change `playback.speed` while it plays.
+- **B · Transformations:** a vector star (path with a radial gradient) that moves, rotates, scales and fades, carrying an animated slime sprite, which carries a spinning coin (two levels of children).
+- **C · Many sprites:** 100 animated sprites per tap from two shared images, reverse z-order, clear, and an "unload" button that shows the asset is kept while sprites use it.
+- **D · Graphical effects:** a pulsing card with a glow, an animated energy shader and a fire shader, a sprite sliding through an elliptical clip window, and grayscale and blur toggles on the whole group.
+- **E · Anchored to a React Native view:** a normal `Pressable` that can get a glow, energy or fire border; "Move button" shows the border following the new layout.
+- Procedural demo sprite sheets generated by `scripts/generate-demo-sprites.py` (synthetic, no third-party art).
+- The overlay now sits inside a flex `View` below the tabs, so effects no longer draw over the header.
+
+### Verification (commands run in the Linux cloud container, Node 22.23.4, npm 10.9.9)
+
+| Command | Result |
+| --- | --- |
+| `npm run typecheck` | Pass |
+| `npm run lint` | Pass (boundary rule now also covers `src/graphics` and `src/assets`) |
+| `npm test -- --ci` | **Pass: 21 suites, 246 tests, 0 failed** (160 from Phase 2, 86 new). CanvasKit prints one `RuntimeEffect error ... unknown identifier 'nope'`: that is the intentional broken-shader fallback test |
+| `npx jest --coverage --ci` | All files: 91.9 % statements, 84.8 % branches, 93.6 % functions, 94.6 % lines |
+| `npm run build` | Pass |
+| `npm run example:install` | Pass |
+| `cd example && npx tsc --noEmit` | Pass |
+| `cd example && CI=1 EXPO_OFFLINE=1 npx expo export --platform android` | Pass: Hermes bundle, 1256 modules, both sprite PNGs included as assets |
+| `cd example && CI=1 EXPO_OFFLINE=1 npx expo export --platform ios` | Pass: Hermes bundle, 1258 modules |
+| `cd example && npx expo export --platform web`, served locally, driven with Playwright (Chromium) | Pass, no page errors. Screenshots of all five demos and the Particles and Motion tabs |
+| `npm run bench` | Engine frame cost in Node, see `PERFORMANCE.md` (not a device measurement) |
+
+New tests by area:
+- **Rendering (display list and real Skia pixels):** layer groups with same-layer children, clip groups, blend modes, hidden and fully transparent subtrees, multiplied opacity, animated-content detection, bounds for every shape, image retain/release (Phase 2 tests still cover layer and zIndex order and transforms); pixels for sprite frames (nearest and linear), unloaded image skipped, linear and radial gradients, path and ellipse, rotated clip, `dst-in` mask, blend mode, glow, grayscale, drop shadow, shader `uv` and time uniforms, broken shader fallback, all built-in shaders, glow border following a moving target.
+- **Graphics model:** path builder and validation, paint validation, shader uniforms, color-matrix helpers.
+- **Sprites:** sheet grid/explicit frames and validation; creation, removal, destroyed sprites; frame progression at exact timestamps; playback speed; loop and repeat; pause/resume; completion; reverse and alternate; frame events, even when a frame lands late; stop and play replacing play; parent/child transforms while animating; timeline composition; engine disposal and shared asset managers; **100 concurrent animated sprites**; **repeated creation/destruction** (asset references return to zero).
+- **Assets:** registration, typed load map, duplicate-load prevention, concurrent loads, failures and retry, retain/release, eviction under budget, unload and force-unload while in use, late loads after unload, dispose, **200 load/unload cycles** without live images left, 50 assets reused across repeated scenes with one decode each.
+- **Engine:** `LocalTimer` rate, `Playback.speed` on tweens and timelines including marker timing, frames kept alive by visible shaders, `attach` by id or node.
+- **Targets and border effects:** window to overlay conversion, transforms, invalid measurements, unregister ends attachments, remeasure broadcast; border effects follow, end on target destroy and after `duration`.
+- **React Native:** `GameFXTarget` mount, measurement, remeasure, unmount, **50 mount/unmount cycles**, provider-level asset loading through `useGameFXAssets`, overlay `pointerEvents="none"`, engine shutdown on provider unmount.
+
+Screenshots from the web build (real CanvasKit rendering in Chromium, **not** a device) are in the project files (`phase3/screenshots/`).
+
+**Not verified:** any Phase 3 behaviour on an Android emulator or device, any iOS run, release builds, image decoding on device (`createSkiaImageLoader` is only type-checked and bundled; the web build exercises the same Skia `MakeImageFromEncoded` path), real frame times, memory and CPU.
+
+### Changed files
+
+New:
+- `src/graphics/{paint,path,shader,effects,index}.ts` (+ `graphics.test.ts`)
+- `src/assets/{assets,index}.ts` (+ `assets.test.ts`, `__tests__/fakeLoader.ts`)
+- `src/sprites/{sheet,sprite,index}.ts` (+ `sprites.test.ts`)
+- `src/scene/{shape,targets}.ts` (+ `displayList.test.ts`)
+- `src/effects/border.ts` (+ `border.test.ts`)
+- `src/engine/graphics.test.ts`
+- `src/react-native/{GameFXTarget.tsx,useGameFXAssets.ts,skiaImageLoader.ts}` (+ `GameFXTarget.test.tsx`)
+- `example/GraphicsDemo.tsx`, `example/assets/{coin,slime}-sheet.png`
+- `scripts/generate-demo-sprites.py`, `scripts/engine.bench.ts`, `jest.setup.canvaskit.js`
+
+Changed:
+- `src/scene/{node,scene,attachment,index}.ts`, `src/runtime/timer.ts`, `src/animation/playback.ts`
+- `src/engine/engine.ts`, `src/effects/index.ts`, `src/core.ts`, `src/index.ts` (+ `index.test.ts`)
+- `src/renderer/skia/SkiaEffectsRenderer.ts` (+ test)
+- `src/react-native/{GameFXOverlay.tsx,GameFXProvider.tsx,useGameFX.ts,index.ts}`
+- `example/{App.tsx,MotionDemo.tsx,package-lock.json}`
+- `jest.config.js`, `eslint.config.mjs`, `tsconfig.json`, `package.json`
+- `README.md`, `docs/{API,ARCHITECTURE,PROGRESS,PERFORMANCE}.md`
+
+### API changes from Phase 2
+
+All additive except where noted.
+- Node options and properties: `shape` accepts `ellipse`, `path` and `image` and fill/stroke paints; new `blendMode`, `effects`, `group`, `clipChildren`, `size`.
+- `Playback.speed` (rate, `>= 0`).
+- Engine: `assets`, `targets`, `createSpriteSheet`, `createSprite`, `attach`; option `assets`.
+- Built-in effects: `glow-border`, `energy-border`, `fire-border` (attachments) next to `particle-burst`.
+- `FrameEvent.drawables`: the `scene` drawable now carries `commands` (the display list) and `time`. `items` stays for compatibility.
+- Provider: `assets`, `assetBudget`, `assetManager`, `imageLoader` props. Hook: `attach`, `remeasure`, `fromWindow`, `assets`. New `GameFXTarget`, `useGameFXAssets`, `createSkiaImageLoader`.
+- **Behaviour change:** the overlay converts from window coordinates using its own measured origin. Apps that passed `pageX/pageY` straight to `fx.play` and whose overlay does not start at the window origin should use `fx.fromWindow`.
+
+### Known limitations
+
+- **Thread model unchanged:** the scene, sprites and display list are built on the JS thread; Skia draws the recorded picture on the UI thread. A busy JS thread delays frames.
+- **Target measurement:** `measureInWindow` is asynchronous, so a target that moves every frame lags by up to one frame even with `trackEveryFrame`; positions animated by Reanimated on the UI thread are not read. Rotation and scale of a target are only known if passed as props.
+- **No view snapshots:** effects can be drawn around a React Native view, not applied to its pixels (no distortion or dissolve of the view itself).
+- **Groups and layers:** a group composites only the descendants on the same layer; a child on another layer escapes its parent's group, clip and effects.
+- **Masks:** Skia blends only inside the drawn geometry, so a `dst-in` mask must cover the whole group area to hide everything outside it (documented in `API.md`).
+- **Shaders:** uniforms are re-uploaded and one shader object is created per shader node per frame. Fine for a few nodes; not measured with many.
+- **Sprite sheets:** one image per sheet; no texture-packer import (JSON atlases) yet, no trimmed frames.
+- **Asset budget:** sizes are estimated as `width × height × 4`; the real GPU or native memory is not measured.
+- **Same-time markers and endless-loop jumps:** unchanged from Phase 2.
+- **Device coverage:** Phase 3 has not run on Android or iOS; see "Not verified".
+
+### Phase 4 direction (not started)
+
+Phase 4 per CLAUDE.md is the general-purpose FX library. Recommended order, building on what exists:
+1. Emitters that follow nodes and targets (continuous particles as attachments), with texture particles drawn from sprite sheets. This gives trails, smoke and sparks.
+2. Presets on the registry with parameter validation: explosion (burst + flash + shake), confetti, glow pulse, floating score, motion trail, card or image movement, and a shake effect on scene nodes.
+3. Quality modes and reduced motion (particle caps, disabling shaders), surfaced through capabilities.
+4. A first device baseline in `PERFORMANCE.md` (Android emulator plus one physical device), before optimizing shader allocation or pooling.
+
+### Next step
+
+1. The owner runs the Graphics tab on the Android 17 emulator (steps in the final report and `README.md`).
+2. Phase 4 starts only after the owner approves it.
 
 ## Phase 2: Runtime, scene graph and animation orchestration (2026-11-12)
 

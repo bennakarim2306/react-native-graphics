@@ -11,7 +11,7 @@ describe('package entry points', () => {
     expect(typeof core.createEngine).toBe('function');
     expect(typeof core.VirtualClock).toBe('function');
     expect(core.particleBurst.name).toBe('particle-burst');
-    expect(core.builtInEffects.map((e) => e.name)).toEqual(['particle-burst']);
+    expect(core.builtInEffects.map((e) => e.name)).toEqual(['particle-burst', 'glow-border', 'energy-border', 'fire-border']);
   });
 
   it('runs the Phase 2 runtime end to end through ./core only (no React Native)', async () => {

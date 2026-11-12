@@ -41,6 +41,11 @@ export interface Playback {
   readonly duration: number;
   /** Resolves when the playback ends. Never rejects. */
   readonly finished: Promise<PlaybackResult>;
+  /**
+   * Playback rate: 1 is normal, 2 twice as fast, 0.5 half speed, 0 frozen (still "playing").
+   * Changes take effect from the current time on, without jumps. Default 1.
+   */
+  speed: number;
   /** Freezes the playback. When called from a marker listener it freezes exactly at the marker. */
   pause(): void;
   resume(): void;
@@ -114,6 +119,14 @@ export class PlaybackImpl implements Playback {
 
   get duration(): number {
     return this.root.totalDuration;
+  }
+
+  get speed(): number {
+    return this.timer.rate;
+  }
+
+  set speed(value: number) {
+    this.timer.setRate(this.host.now(), value);
   }
 
   get isActive(): boolean {

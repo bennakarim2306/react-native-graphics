@@ -16,6 +16,14 @@ import type { Random } from '../runtime/rng';
 import { LocalTimer } from '../runtime/timer';
 import { Scene } from '../scene/scene';
 import type { SceneOptions } from '../scene/scene';
+import { AssetManager } from '../assets/assets';
+import type { AssetManagerOptions } from '../assets/assets';
+import { TargetRegistry } from '../scene/targets';
+import type { SceneNode } from '../scene/node';
+import { SpriteSheet } from '../sprites/sheet';
+import type { SpriteSheetOptions } from '../sprites/sheet';
+import { Sprite } from '../sprites/sprite';
+import type { SpriteOptions } from '../sprites/sprite';
 
 export type EffectStatus = 'playing' | 'paused' | 'completed' | 'cancelled';
 
@@ -77,6 +85,11 @@ export interface EngineOptions {
   readonly layers?: SceneOptions['layers'];
   /** Receives errors thrown by listeners, callbacks and effects. Defaults to rethrowing on a microtask. */
   readonly onError?: ErrorReporter;
+  /**
+   * Asset cache. Pass options to create one owned by the engine (disposed with it), or share an
+   * existing manager between engines (then you dispose it).
+   */
+  readonly assets?: AssetManager | AssetManagerOptions;
 }
 
 export type EngineState = 'running' | 'paused' | 'disposed';
@@ -141,6 +154,11 @@ const DEFAULT_MAX_ACTIVE = 32;
 export class Engine implements PlayableRunner {
   /** The scene graph drawn below effects. Coordinates are overlay pixels. */
   readonly scene: Scene;
+  /** Image and sprite-sheet assets. */
+  readonly assets: AssetManager;
+  /** Named anchors for host (React Native) views; see `GameFXTarget`. */
+  readonly targets: TargetRegistry;
+  private readonly ownsAssets: boolean;
   private readonly clock: Clock;
   private readonly random: Random;
   private readonly definitions = new Map<string, EffectDefinition<never>>();
@@ -177,6 +195,14 @@ export class Engine implements PlayableRunner {
       if (this.currentState !== 'disposed') this.ensureSubscribed();
     });
     this.scene.markClean();
+    this.targets = new TargetRegistry(this.scene, this.reportError);
+    if (options.assets instanceof AssetManager) {
+      this.assets = options.assets;
+      this.ownsAssets = false;
+    } else {
+      this.assets = new AssetManager({ onError: this.reportError, ...options.assets });
+      this.ownsAssets = true;
+    }
     this.playbackHost = {
       now: () => this.now(),
       reportError: this.reportError,
@@ -282,6 +308,26 @@ export class Engine implements PlayableRunner {
     return handle;
   }
 
+  /**
+   * Starts an effect that follows a target: a scene node, or the id of a registered host view
+   * target (`<GameFXTarget id>`). The effect receives the node as its `target` parameter.
+   * Throws `InvalidOptionError` for unknown target ids.
+   */
+  attach<Params extends { readonly target: SceneNode }>(
+    target: string | SceneNode,
+    effect: EffectDefinition<Params> | string,
+    params: Omit<Params, 'target'>,
+    options: { seed?: number } = {},
+  ): EffectHandle {
+    this.assertAlive();
+    let node = typeof target === 'string' ? undefined : target;
+    if (typeof target === 'string') {
+      node = this.targets.node(target);
+      if (!node) throw new InvalidOptionError(`Unknown target "${target}". Mount <GameFXTarget id="${target}"> first.`);
+    }
+    return this.play(effect, { ...params, target: node } as Params, options);
+  }
+
   // --- Animations -------------------------------------------------------------------------
 
   /** Creates a tween bound to this engine. Call `.play()` or add it to a timeline. */
@@ -352,6 +398,30 @@ export class Engine implements PlayableRunner {
     return playback;
   }
 
+  // --- Sprites ----------------------------------------------------------------------------
+
+  /** Creates a sprite sheet from a loaded image asset (or the id of one). */
+  createSpriteSheet(options: Omit<SpriteSheetOptions, 'image'> & { readonly image: SpriteSheetOptions['image'] | string }): SpriteSheet {
+    this.assertAlive();
+    const image = typeof options.image === 'string' ? this.assets.get(options.image) : options.image;
+    return new SpriteSheet({ ...options, image });
+  }
+
+  /**
+   * Creates a sprite node, added to `options.parent` or the scene root. Its animations run on
+   * this engine's clock.
+   */
+  createSprite(options: SpriteOptions): Sprite {
+    this.assertAlive();
+    const sprite = new Sprite(this.scene, options, this);
+    try {
+      return this.scene.insert(sprite, options.parent);
+    } catch (error) {
+      sprite.destroy();
+      throw error;
+    }
+  }
+
   // --- Control ----------------------------------------------------------------------------
 
   /** Freezes engine time: every playback and effect stops advancing until `resume`. */
@@ -405,6 +475,8 @@ export class Engine implements PlayableRunner {
       this.endEffect(entry.handle, { status: 'cancelled', reason: 'disposed' });
     }
     this.scene.dispose('engineDisposed');
+    this.targets.dispose();
+    if (this.ownsAssets) this.assets.dispose();
     this.currentState = 'disposed';
     this.unsubscribe();
     this.emitter.clear();
@@ -448,8 +520,8 @@ export class Engine implements PlayableRunner {
 
   private publish(time: number): void {
     const drawables: Drawable[] = [];
-    const sceneDrawable = this.scene.drawable();
-    if (sceneDrawable.items.length > 0) drawables.push(sceneDrawable);
+    const sceneDrawable = this.scene.drawable(time);
+    if (sceneDrawable.commands.length > 0) drawables.push(sceneDrawable);
     for (const entry of this.active) drawables.push(...entry.instance.drawables);
     this.scene.markClean();
     this.lastDrawables = drawables;
@@ -461,6 +533,7 @@ export class Engine implements PlayableRunner {
     if (this.scene.isDirty) return true;
     if (this.currentState === 'paused') return false;
     return (
+      this.scene.hasAnimatedContent ||
       this.playbacks.some((p) => p.status === 'playing') || this.active.some((e) => e.handle.status === 'playing')
     );
   }
