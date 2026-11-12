@@ -3,14 +3,22 @@
 | Phase | Status |
 | --- | --- |
 | 0. Repository audit and migration | **Done** (2026-11-11, merged in PR #1) |
-| 1. Working engine prototype (particle burst) | **Implemented and verified in Node, real Skia (CanvasKit) and a web build. Device and simulator check still open**, see below |
+| 1. Working engine prototype (particle burst) | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not yet verified. See below |
 | 2 to 6 | Not started |
 
 ## Phase 1: Working engine prototype (2026-11-12)
 
 ### Status
 
-All Phase 1 completion criteria are met **except native confirmation**. Nothing has run on an Android or iOS device, emulator or simulator, because this environment has no Android SDK, Xcode or device. The showcase does bundle for both platforms, and the same code runs end to end in a browser with real Skia rendering. Running the showcase once on a device is the remaining step (see Pending decisions).
+**Done for Android.** All Phase 1 completion criteria are met, and the showcase has run on Android.
+
+**Android, verified 2026-11-12 by the project owner:** Android 17 emulator, Expo Go (SDK 58), development (debug) JS bundle from `npx expo start`. The showcase was installed from the packed SDK tarball via `npm run example:install`. Genuine emulator screenshots are in [`docs/evidence/`](evidence/):
+- `phase1-android17-emulator-idle.png`: the app loads with the overlay mounted and 0 active effects.
+- `phase1-android17-emulator-burst-early.png` and `-late.png`: a burst rendered by Skia at the tap point in the tap area, at two moments (particles spread and fall). The tap counter increased (34, then 36 taps), so touches pass through the overlay. "Active effects: 1" is shown while the burst runs.
+
+The owner reported that the effects tested successfully. The screenshots directly show the tap-area burst. The other buttons ("5 bursts at once", "Cancel all", the mount switch, landscape) were reported as working but are not shown in a screenshot.
+
+**Not verified:** iOS (no device or simulator available), release builds, physical Android hardware, and any performance measurement. **Expo Go works for this slice on Android SDK 58.** This is now verified for Android only, not iOS.
 
 | Completion criterion | Evidence |
 | --- | --- |
@@ -68,7 +76,7 @@ Changed: `package.json` (exports, peer and dev dependencies, scripts), `package-
 
 ### Known limitations
 
-- Not verified on any native platform (see Status).
+- Verified natively only on an Android 17 emulator in Expo Go (debug). Not verified on iOS, physical devices or release builds.
 - Positions are overlay-relative only. There is no conversion from other views and no safe-area handling yet.
 - One built-in effect. No reduced-motion or quality settings yet.
 - `lib/` is extensionless ESM: fine for Metro, Jest and bundlers, but not for plain Node `import`.
@@ -77,12 +85,12 @@ Changed: `package.json` (exports, peer and dev dependencies, scripts), `package-
 
 ### Pending decisions
 
-1. **Device run (needed to close Phase 1).** The quickest path is Expo Go on your phone. SDK 58's Expo Go includes Skia and Reanimated, but this hasn't been verified. Clone the branch, run `npm ci && npm run example:install && cd example && npx expo start`, and scan the QR code. Alternatively, if Android Studio and an emulator are on your PC, I can drive the build there.
+1. **iOS run.** Still open. It needs a Mac with the iOS Simulator or an iPhone with Expo Go. On Windows PowerShell 5, run the commands one per line (`npm ci`, `npm run example:install`, `cd example`, `npx expo start`), because `&&` is not supported there.
 2. Package name (still `react-native-graphics`), formatter (Prettier) and license (`UNLICENSED`), carried over from Phase 0.
 
 ### Next phase
 
-Phase 2 (runtime and scene composition) starts only after Phase 1 is confirmed on a device and you approve it.
+Phase 2 (runtime and scene composition) starts when the owner approves it. Standing rule: every new effect also gets a demo in a small standalone example app like `example/`, so it can be tried on a device.
 
 ## Phase 0: Repository audit and migration (2026-11-11)
 

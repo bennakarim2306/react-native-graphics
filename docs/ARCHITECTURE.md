@@ -54,7 +54,7 @@ The UI-thread worklet approach proposed in Phase 0 was **not** used for the firs
 Consequences and limits:
 - A busy JS thread delays effect frames. Effects stay correct (time-based), but may skip frames.
 - Moving simulation to the UI thread remains an option for Phase 3. The pure, closed-form particle math was written so it can be moved to worklets later.
-- Assigning a JS-recorded `SkPicture` to a shared value has been verified on **web** (Reanimated web + CanvasKit) and in Jest. It has **not been verified on Android or iOS yet**.
+- Assigning a JS-recorded `SkPicture` to a shared value works on **Android** (Android 17 emulator, Expo Go, 2026-11-12), on web and in Jest. It is **not verified on iOS yet**, and frame timing has not been measured.
 
 ## Runtime concepts
 

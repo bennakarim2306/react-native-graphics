@@ -2,7 +2,7 @@
 
 An embeddable 2D game-effects engine for existing React Native apps. Mount one transparent overlay and trigger effects through a typed API, without writing animation internals. Game rules and app state stay in your app.
 
-> **Status: Phase 1 prototype.** One effect exists (`particle-burst`). The API is not stable yet and the package is not published. See [docs/PROGRESS.md](docs/PROGRESS.md) for what has and has not been verified, including the fact that it **has not yet run on a physical device or simulator**.
+> **Status: Phase 1 prototype.** One effect exists (`particle-burst`). The API is not stable yet and the package is not published. See [docs/PROGRESS.md](docs/PROGRESS.md) for what has and has not been verified. It has run on an Android 17 emulator in Expo Go, but not yet on iOS.
 
 ## Requirements
 
@@ -73,9 +73,11 @@ Positions are in points relative to the overlay's top-left corner. If the overla
 npm ci
 npm run example:install       # build, pack into example/vendor/, install it in example/
 cd example
-npx expo start                # then open on a device, emulator or simulator
+npx expo start                # press s for Expo Go if needed, then scan the QR code
 npm run export:web && npx serve dist-web   # optional web preview
 ```
+
+Expo Go (SDK 58) runs the showcase without a native build. This has been verified on an Android 17 emulator. In Windows PowerShell 5, run the commands one per line, because `&&` is not supported there.
 
 ## Development
 
