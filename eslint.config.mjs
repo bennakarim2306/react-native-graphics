@@ -3,14 +3,14 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['lib/', 'coverage/', 'node_modules/'] },
+  { ignores: ['lib/', 'coverage/', 'node_modules/', 'example/'] },
   js.configs.recommended,
   {
-    files: ['*.config.js'],
+    files: ['*.config.js', 'jest.setup.*.js'],
     languageOptions: { sourceType: 'commonjs', globals: globals.node },
   },
   {
-    files: ['src/**/*.ts'],
+    files: ['src/**/*.ts', 'src/**/*.tsx'],
     extends: [...tseslint.configs.strictTypeChecked],
     languageOptions: {
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },

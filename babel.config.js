@@ -1,8 +1,4 @@
-// Babel is only used by Jest to strip TypeScript. Type checking is done by `tsc`.
-// Phase 3 is expected to switch to `@react-native/babel-preset` once RN rendering is added.
+// Babel is only used by Jest. Type checking is done by `tsc`, and the published build by `tsc` too.
 module.exports = {
-  presets: [
-    ['@babel/preset-env', { targets: { node: 'current' } }],
-    '@babel/preset-typescript',
-  ],
+  presets: ['module:@react-native/babel-preset'],
 };
