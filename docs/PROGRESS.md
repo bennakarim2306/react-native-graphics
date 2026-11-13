@@ -206,7 +206,7 @@ New tests by area:
 
 Screenshots from the web build (real CanvasKit rendering in Chromium, **not** a device) are in the project files (`phase3/screenshots/`).
 
-**Not verified:** any Phase 3 behaviour on an Android emulator or device, any iOS run, release builds, image decoding on device (`createSkiaImageLoader` is only type-checked and bundled; the web build exercises the same Skia `MakeImageFromEncoded` path), real frame times, memory and CPU.
+**Not verified at implementation time:** any Phase 3 behaviour on an Android emulator or device (the owner has since verified the Graphics tab on the Android 17 emulator, 2026-11-13), any iOS run, release builds, image decoding on device (`createSkiaImageLoader` is only type-checked and bundled; the web build exercises the same Skia `MakeImageFromEncoded` path), real frame times, memory and CPU.
 
 ### Changed files
 
@@ -252,7 +252,7 @@ All additive except where noted.
 - **Sprite sheets:** one image per sheet; no texture-packer import (JSON atlases) yet, no trimmed frames.
 - **Asset budget:** sizes are estimated as `width × height × 4`; the real GPU or native memory is not measured.
 - **Same-time markers and endless-loop jumps:** unchanged from Phase 2.
-- **Device coverage:** Phase 3 has not run on Android or iOS; see "Not verified".
+- **Device coverage:** Phase 3 has run on the Android 17 emulator (Expo Go, debug) only; not on iOS, physical devices or release builds.
 
 ### Phase 4 direction (as planned at the end of Phase 3; Phase 4 is now implemented, see above)
 
