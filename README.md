@@ -2,7 +2,7 @@
 
 An embeddable 2D game-effects engine for existing React Native apps. Mount one transparent overlay and trigger effects through a typed API, without writing animation internals. Game rules and app state stay in your app.
 
-> **Status: Phase 3.** The engine has a scene graph, tweens, keyframes and timelines with event markers (Phase 2), plus a graphics layer (images, paths, gradients, clipping, masks, blend modes, glow/blur/color effects, runtime shaders), sprite sheets, an asset manager, and effects anchored to ordinary React Native views. The API is not stable yet and the package is not published. Phases 1 and 2 have run on an Android 17 emulator in Expo Go; Phase 3 has been checked with tests, Android/iOS bundles and the web build only, and nothing has run on iOS yet. See [docs/PROGRESS.md](docs/PROGRESS.md).
+> **Status: Phase 4.** The engine has a scene graph, tweens, keyframes and timelines with event markers (Phase 2), a graphics layer with sprites, assets and runtime shaders (Phase 3), and a composable effects system (Phase 4): fifteen built-in effects including a flagship `fire-border`, an explosion built from reusable primitives, confetti, sparks, smoke, trails, glow pulses, shockwaves and scoped screen shake; a configurable particle engine with five emitter shapes; a shader library with a central compile cache; and a Throw & Explode sequence that moves a real React Native view on the engine timeline. The API is not stable yet and the package is not published. Phases 1 to 3 have been checked by the owner on an Android 17 emulator in Expo Go. Phase 4 has been checked with tests, Android/iOS bundles and the web build, and awaits the same emulator check. Nothing has run on iOS yet. See [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## Requirements
 
@@ -101,32 +101,52 @@ run.speed = 2;                                // pause(), resume(), stop(), onMa
 engine.animate(hero, { x: 300, rotation: 360, duration: 1000 }).play();
 ```
 
-### Effects around an existing view
+### Effects on an existing view
 
 ```tsx
-<GameFXTarget id="buy-button">
-  <Pressable onPress={buy}><Text>Buy</Text></Pressable>
+<GameFXTarget id="card" style={styles.card}>
+  <Text>ACE OF SPADES</Text>
 </GameFXTarget>
 
-const handle = fx.attach('buy-button', 'fire-border', { intensity: 0.8, cornerRadius: 12 });
-// handle.cancel(); the effect also ends when the target unmounts
+// Flames around the card; they follow it while it moves, rotates and scales.
+const fire = fx.attach('card', { effect: 'fire-border', intensity: 0.8, flameHeight: 25, color: '#FF6600', glow: true, sparks: true });
+fire.setIntensity(1.2);
+fire.stop();                                  // graceful; the effect also ends when the target unmounts
+
+// Move the real view through the engine (explicit transform binding).
+fx.animate('card', { x: 120, y: -80, rotation: 360, duration: 1000 });
+
+// Throw the view, explode at the impact, shake, and bring it back. One handle for all of it.
+const seq = fx.throwAndExplode('card', {
+  throw: { height: 170, distance: 150, duration: 1000, rotation: 540 },
+  explosion: { particles: 150, debris: true },
+  shake: { amplitude: 9 },
+  afterImpact: 'return',
+});
+seq.playback.cancel();                        // restores the view's transform and opacity at once
 ```
 
-The border is drawn by the overlay around the view's measured rectangle; the view itself is not rendered by Skia. See the limitations in [docs/API.md](docs/API.md).
+The overlay draws effects around the view's measured rectangle; the view itself is not rendered by Skia. Effects combine on the engine timeline (`fx.timeline()`, `fx.cue(...)`, `fx.throw(...)`), and quality levels (`low`, `medium`, `high`) and reduced motion are provider props. See [docs/EFFECTS.md](docs/EFFECTS.md) for every effect, the particle and shader systems, composition rules and limitations.
 
 ## Showcase app
 
-`example/` is a separate Expo SDK 58 app that installs the packed SDK tarball and imports only the public entry point. It has three tabs: **Particles** (Phase 1 bursts), **Motion** (Phase 2: orbiting hierarchy, staggered keyframe loops, and a thrown card whose `impact` marker triggers a burst, with cancel, rewind, skip and pause buttons) and **Graphics** (Phase 3: A sprite animation with pause/resume/speed/stop, B hierarchical transforms, C 100 sprites per tap, D glow, shaders, clipping, grayscale and blur, E glow/energy/fire borders around a normal React Native button).
+`example/` is a separate Expo SDK 58 app that installs the packed SDK tarball and imports only the public entry point. It has four tabs:
+
+- **Effects** (Phase 4, "GameFX Effects Showcase"): A fire border on an ordinary card with intensity, color, move, rotate and scale controls; B Throw & Explode with cancel at any moment; C an effects playground; D a gallery of every preset; E several effects combined on the same targets; F performance scenarios with an on-screen meter (FPS of the effects loop, JS work per frame, particle counts).
+- **Particles** (Phase 1 bursts).
+- **Motion** (Phase 2: orbiting hierarchy, staggered keyframe loops, and a thrown card whose `impact` marker triggers a burst, with cancel, rewind, skip and pause buttons).
+- **Graphics** (Phase 3: sprite animation, hierarchical transforms, 100 sprites per tap, glow, shaders, clipping, grayscale and blur, borders around a normal React Native button).
+
+In a shell (macOS, Linux, or PowerShell one line at a time):
 
 ```sh
 npm ci
-npm run example:install       # build, pack into example/vendor/, install it in example/
+npm run example:install
 cd example
-npx expo start                # press s for Expo Go if needed, then scan the QR code
-npm run export:web && npx serve dist-web   # optional web preview
+npx expo start --clear
 ```
 
-Expo Go (SDK 58) runs the showcase without a native build. This has been verified on an Android 17 emulator. In Windows PowerShell 5, run the commands one per line, because `&&` is not supported there.
+Then press `a` for the Android emulator, or scan the QR code with Expo Go. `npm run example:install` builds the SDK, packs it into `example/vendor/` and installs it in `example/`. Run it again after every SDK change. Expo Go (SDK 58) runs the showcase without a native build; this has been verified on an Android 17 emulator. In Windows PowerShell 5, run the commands one per line, because `&&` is not supported there. For a web preview, run `npx expo export --platform web --output-dir dist-web` in `example/` and serve `dist-web`; [docs/TESTING.md](docs/TESTING.md) describes the scripted screenshot check.
 
 ## Development
 
@@ -139,11 +159,13 @@ Requires Node 22 (see `.nvmrc`) and npm.
 | `npm test` | Jest: `core` (Node), `renderer` (real Skia via CanvasKit) and `react-native` projects |
 | `npm run build` | Emits ESM JavaScript and `.d.ts` to `lib/` |
 | `npm run check` | All of the above |
-| `npm run bench` | Engine-side frame cost in Node (not a device measurement, see `docs/PERFORMANCE.md`) |
+| `npm run bench` | Engine-side frame cost in Node, including the seven Phase 4 effect scenarios (not a device measurement, see `docs/PERFORMANCE.md`) |
 
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): module boundaries, thread model, coordinates, lifecycle.
 - [docs/API.md](docs/API.md): public API and error/cancellation semantics.
+- [docs/EFFECTS.md](docs/EFFECTS.md): effects, particles, shaders, composition, React Native targets, quality, custom effects.
+- [docs/TESTING.md](docs/TESTING.md): test layers, commands, visual and device checks.
 - [docs/PROGRESS.md](docs/PROGRESS.md): phase status and verification evidence.
-- [docs/PERFORMANCE.md](docs/PERFORMANCE.md): measurements (none on devices yet).
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md): Node benchmarks and the procedure for measuring on a device (no device numbers yet).

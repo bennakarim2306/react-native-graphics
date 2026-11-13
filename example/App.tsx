@@ -7,10 +7,11 @@ import { useEffect, useState } from 'react';
 import type { GestureResponderEvent } from 'react-native';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { GameFXOverlay, GameFXProvider, SDK_VERSION, useGameFX, useGameFXEngine } from 'react-native-graphics';
+import { EffectsDemo } from './EffectsDemo';
 import { DEMO_ASSETS, GraphicsDemo } from './GraphicsDemo';
 import { MotionDemo } from './MotionDemo';
 
-type Tab = 'effects' | 'motion' | 'graphics';
+type Tab = 'fx' | 'particles' | 'motion' | 'graphics';
 
 const PALETTES: Record<string, readonly string[]> = {
   Gold: ['#FFD54A', '#FFB300', '#FF7043', '#FFF3C4'],
@@ -114,7 +115,8 @@ function Tabs({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void }) {
     <View style={styles.tabs}>
       {(
         [
-          ['effects', 'Particles'],
+          ['fx', 'Effects'],
+          ['particles', 'Particles'],
           ['motion', 'Motion'],
           ['graphics', 'Graphics'],
         ] as const
@@ -135,7 +137,7 @@ function Tabs({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void }) {
 
 export default function App() {
   const [fxEnabled, setFxEnabled] = useState(true);
-  const [tab, setTab] = useState<Tab>('effects');
+  const [tab, setTab] = useState<Tab>('fx');
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
@@ -149,7 +151,7 @@ export default function App() {
         <GameFXProvider assets={DEMO_ASSETS}>
           {/* The overlay fills this view (below the tabs), so effects never draw over the header. */}
           <View style={styles.fxArea}>
-            {tab === 'effects' ? <Showcase /> : tab === 'motion' ? <MotionDemo /> : <GraphicsDemo />}
+            {tab === 'fx' ? <EffectsDemo /> : tab === 'particles' ? <Showcase /> : tab === 'motion' ? <MotionDemo /> : <GraphicsDemo />}
             <GameFXOverlay />
           </View>
         </GameFXProvider>

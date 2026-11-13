@@ -135,8 +135,14 @@ export function validateFill(fill: Fill, what = 'fill'): void {
       }
       for (const [name, value] of Object.entries(s.uniforms ?? {})) {
         const values = typeof value === 'number' ? [value] : value;
-        if (!s.shader.uniforms.some((u) => u.name === name)) {
+        const uniform = s.shader.uniforms.find((u) => u.name === name);
+        if (!uniform) {
           throw new InvalidOptionError(`${what}: shader "${s.shader.name}" has no uniform "${name}".`);
+        }
+        if (values.length !== uniform.value.length) {
+          throw new InvalidOptionError(
+            `${what}: uniform "${name}" of shader "${s.shader.name}" takes ${String(uniform.value.length)} value(s), got ${String(values.length)}.`,
+          );
         }
         if (values.some((v) => !Number.isFinite(v))) {
           throw new InvalidOptionError(`${what}: uniform "${name}" must be finite.`);

@@ -1,6 +1,7 @@
 import { InvalidOptionError } from '../runtime/errors';
 import { Playable, Wait } from './playable';
 import type { IterationEvent, MarkerInfo, PlayableOptions, RenderContext, ScheduledEvent } from './playable';
+import type { PlaybackResult } from './playback';
 
 /**
  * Where to place something on a timeline:
@@ -133,6 +134,11 @@ export class Timeline extends Playable {
       callback ? { kind, name, time, callback } : { kind, name, time },
     );
     return this.eventsCache;
+  }
+
+  override notifyPlaybackEnd(result: PlaybackResult): void {
+    super.notifyPlaybackEnd(result);
+    for (const entry of this.entries) entry.playable.notifyPlaybackEnd(result);
   }
 
   override resetState(): void {

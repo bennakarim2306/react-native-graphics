@@ -1,5 +1,5 @@
 import { InvalidOptionError } from '../runtime/errors';
-import type { Playback } from './playback';
+import type { Playback, PlaybackResult } from './playback';
 
 /** Options shared by tweens, keyframe animations and timelines. */
 export interface PlayableOptions {
@@ -126,6 +126,17 @@ export abstract class Playable {
 
   /** Called the first time the playable renders past its delay. */
   protected onStart?(context: RenderContext): void;
+
+  /**
+   * Called once when a playback running this playable (or a timeline containing it) ends.
+   * Effect cues cancel the effects they started; throws restore their target when cancelled.
+   */
+  protected onPlaybackEnd?(result: PlaybackResult): void;
+
+  /** @internal Delivers the end of a playback to this playable and its children. */
+  notifyPlaybackEnd(result: PlaybackResult): void {
+    this.onPlaybackEnd?.(result);
+  }
 
   /** @internal Forgets captured start values so the playable can run again. */
   resetState(): void {

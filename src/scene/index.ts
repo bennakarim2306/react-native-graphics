@@ -9,5 +9,5 @@ export type { SceneCommand, SceneDrawable, SceneDrawItem, SceneGroupCommand, Sce
 export type { Attachment, AttachmentHandle, AttachmentState, AttachOptions, DetachReason } from './attachment';
 export { createHostViewBinding, syncNodeToLayout } from './host';
 export type { HostLayout, HostViewBinding } from './host';
-export { TargetRegistry } from './targets';
-export type { TargetEvents, TargetTransform, WindowRect } from './targets';
+export { isTargetHandle, TargetMotion, TargetRegistry } from './targets';
+export type { TargetEvents, TargetHandle, TargetMotionProperty, TargetRef, TargetTransform, TargetViewTransform, WindowRect } from './targets';

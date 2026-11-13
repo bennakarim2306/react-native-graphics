@@ -3,12 +3,12 @@ import { energyShader, fireShader } from '../graphics/shader';
 import { VirtualClock } from '../runtime/clock';
 import type { SceneNode } from '../scene/node';
 import type { SceneDrawable } from '../scene/scene';
-import { energyBorder, fireBorder, glowBorder } from './border';
+import { energyBorder, glowBorder } from './border';
 
 function setup() {
   const clock = new VirtualClock();
   const errors: unknown[] = [];
-  const engine = createEngine({ clock, effects: [glowBorder, energyBorder, fireBorder], onError: (e) => errors.push(e) });
+  const engine = createEngine({ clock, effects: [glowBorder, energyBorder], onError: (e) => errors.push(e) });
   const target = engine.scene.createNode({ x: 100, y: 100, size: { width: 60, height: 40 } });
   return { clock, engine, target, errors };
 }
@@ -75,7 +75,7 @@ describe('border effects', () => {
   it('stops after its duration and detaches when cancelled', async () => {
     const { clock, engine, target } = setup();
     const timed = engine.play('glow-border', { target, duration: 100 });
-    const cancelled = engine.play('fire-border', { target, intensity: 2 });
+    const cancelled = engine.play('energy-border', { target, shader: 'fire', intensity: 2 });
     expect(engine.scene.attachmentCount).toBe(2);
     clock.advance(120);
     await expect(timed.finished).resolves.toEqual({ status: 'completed' });
@@ -85,7 +85,7 @@ describe('border effects', () => {
 
   it('fills the line with the chosen shader and maps intensity to its uniform', () => {
     const { clock, engine, target } = setup();
-    engine.play('fire-border', { target, intensity: 1.5, glowColor: '#FF8800' });
+    engine.play('energy-border', { target, shader: 'fire', intensity: 1.5, glowColor: '#FF8800' });
     engine.play('energy-border', { target, intensity: 3 });
     clock.advance(16);
     const borders = engine.drawables.filter((d): d is SceneDrawable => d.kind === 'scene' && (d as SceneDrawable).items[0]?.nodeId === -1);

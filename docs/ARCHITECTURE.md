@@ -17,11 +17,14 @@ One package to start, with internal modules. Arrows point to what a module may i
                |         \
                |          src/renderer/skia   (draws a scene snapshot; owns native graphics resources)
                |         /
-   src/effects (typed registry, presets, parameter validation, border effects)
+   src/effects (typed registry, primitives, composites, presets, fire border, placement)
         |            \
-   src/particles   src/sprites   (burst simulation; sheets, frame animations, sprite nodes)
+   src/particles   src/sprites   (bursts, emitters, shapes, curves, buffer pool; sheets, sprite nodes)
+        |
+   src/motion   (analytical motions: ballistic throw)
         |            /
-   src/engine (Engine: owns scene, targets, assets, playbacks, effects; frame loop; lifecycle)
+   src/engine (Engine: owns scene, targets, assets, playbacks, effects, cues, camera, quality;
+               frame loop; lifecycle; sequences such as throwAndExplode)
         |            \
    src/scene  (nodes, transforms, layers, shapes, display list, clipping, attachments, targets)
         |     \
@@ -44,11 +47,12 @@ One package to start, with internal modules. Arrows point to what a module may i
 | `graphics` | Yes (descriptions only; Skia objects are made by the renderer) | **Phase 3 (done)** |
 | `assets` | Yes (platform decoding is an injected `ImageLoader`) | **Phase 3 (done)** |
 | `sprites` | Yes (frame math, sheet metadata, sprite nodes) | **Phase 3 (done)** |
-| `effects` | Yes | **Phase 1 (`particle-burst` done)**, Phase 4 |
+| `effects` | Yes | **Phase 1 (`particle-burst` done)**, **Phase 4 (done)** |
+| `motion` | Yes | **Phase 4 (done)** |
 | `renderer/skia` | No: the only module importing `@shopify/react-native-skia` drawing APIs | **Phase 1 (done)** |
 | `react-native` | No: host integration | **Phase 1 (done)** |
 
-The "pure" column is **enforced** by an ESLint `no-restricted-imports` rule in `eslint.config.mjs`. It rejects imports of `react`, `react-native`, `react-native-*`, `@shopify/*` and of the `renderer/` and `react-native/` folders from the nine engine modules (`runtime`, `animation`, `scene`, `engine`, `particles`, `sprites`, `graphics`, `assets`, `effects`).
+The "pure" column is **enforced** by an ESLint `no-restricted-imports` rule in `eslint.config.mjs`. It rejects imports of `react`, `react-native`, `react-native-*`, `@shopify/*` and of the `renderer/` and `react-native/` folders from the ten engine modules (`runtime`, `animation`, `scene`, `engine`, `particles`, `sprites`, `graphics`, `assets`, `effects`, `motion`).
 
 Belote Tunisienne, or any other game, is an external consumer. Card-specific presets and the mapping from game events to effects live in that consumer, or in an optional adapter in Phase 6.
 
@@ -65,6 +69,7 @@ Consequences and limits:
 - Moving simulation to the UI thread remains an option for Phase 3. The pure, closed-form particle math was written so it can be moved to worklets later.
 - Assigning a JS-recorded `SkPicture` to a shared value works on **Android** (Android 17 emulator, Expo Go, 2026-11-12), on web and in Jest. It is **not verified on iOS yet**, and frame timing has not been measured.
 - Phase 2 keeps this model. Animations, timelines and the scene graph run in the same JS-thread frame callback, and the scene is drawn into the same picture as the effects. A frame is published only when something runs or the scene changed; nothing goes through React state.
+- Phase 4 keeps it too. Two additions cross to the UI thread through Reanimated shared values, without React re-renders: the transform binding of `<GameFXTarget>` views (set from the engine's `transform` event) and the camera offset (screen shake), applied when the picture is recorded.
 
 ## Runtime concepts
 
@@ -73,7 +78,7 @@ Consequences and limits:
 - **Time sampling**: effects and animations evaluate absolute local time (`now - start - pausedTime`). They never accumulate per-frame deltas, so large frame gaps cannot cause drift, and the same times give the same values at any frame rate (tested).
 - **Seeded RNG**: all randomness comes from an injected, seedable generator.
 - **Subscription**: the engine listens to the clock only while a playback or effect is playing, or after a scene change (one frame to publish it). An idle or fully paused engine costs nothing per frame.
-- **Frame order**: (1) playbacks advance and deliver their markers, (2) effects update (including effects started by markers in step 1), (3) attachments receive their targets' final transforms, (4) one `frame` event publishes the scene drawable (if it has visible shapes) followed by effect drawables.
+- **Frame order**: (1) playbacks advance and deliver their markers (cues start their effects here), (2) effects update (including effects started in step 1), (3) attachments receive their targets' final transforms, (4) one `frame` event publishes, bottom to top, effects with a negative `zIndex`, the scene drawable (if it has visible shapes), then the other effects by `zIndex` and start order, plus the camera offset.
 - **States**: engine `running ⇄ paused → disposed`. Effect handle `playing ⇄ paused → completed | cancelled`. Playback `playing ⇄ paused → completed | cancelled | stopped`. `finished` promises always resolve and never reject. Disposal is idempotent and releases everything.
 - **Control**: `cancelAll()` cancels playbacks and effects (values stay where they are). `reset()` stops playbacks back to their initial state and cancels effects; the scene stays. `dispose()` also destroys the scene.
 - **Bounded resources**: at most 2000 particles per burst and `maxActiveEffects` (default 32) running effects. The oldest effect is cancelled beyond that limit.
@@ -146,7 +151,9 @@ The engine describes **what** to draw in its own types; only `renderer/skia` tur
 4. `fx.attach(id, effect, params)` starts an effect with `target` set to the proxy node. When the view unmounts, the proxy node is destroyed and attached effects end (`targetDestroyed`).
 5. Scene nodes can be children of a proxy node, so engine content placed "inside" a view follows it.
 
-Limits: measurement is asynchronous, so a scrolled or animated view is followed with up to one frame of lag; `trackEveryFrame` costs one `measureInWindow` per frame per target. Reanimated-driven transforms are not read directly (a UI-thread path is not implemented). Effects drawn around a view are drawn by the overlay; the view itself is never rendered by Skia. Effects that need the view's pixels (dissolve, distortion) would need a snapshot (`Skia.Image.MakeImageFromViewTag` exists) and are not implemented.
+**Transform binding (Phase 4).** Arbitrary transforms of a native view cannot be observed reliably, so the engine owns them instead: each target has a `TargetMotion` (`x`, `y`, `rotation`, `scale`, `opacity`) plus removable offsets (shakes). The registry places the proxy node at layout + motion and emits a `transform` event; `<GameFXTarget>` (an `Animated.View`) writes it into Reanimated shared values that prepend translate/rotate/scale to the view's own style transform and multiply its opacity. Because the same numbers drive the view and the proxy node, effects stay aligned with a moving, rotating, scaling view. Measurement is deferred while the binding is not at identity, so the stored layout is always untransformed. Tweens, keyframes, timelines and `motion.throw` animate `TargetMotion` like any animation target.
+
+Limits: measurement is asynchronous, so a scrolled or animated view is followed with up to one frame of lag; `trackEveryFrame` costs one `measureInWindow` per frame per target. Transforms applied to the view other than through its binding are not read. Effects drawn around a view are drawn by the overlay; the view itself is never rendered by Skia. Effects that need the view's pixels (dissolve, distortion) would need a snapshot (`Skia.Image.MakeImageFromViewTag` exists) and are not implemented.
 
 ## Coordinate spaces
 
@@ -163,16 +170,30 @@ Safe-area insets are exposed to effects as data. They are not applied silently, 
 
 - `<GameFXProvider>` owns the runtime, registry and lifecycle scope for its subtree.
 - `<GameFXOverlay>` (named `GameFXCanvas` in the Phase 0 proposal) is an absolutely positioned, transparent Skia canvas with `pointerEvents="none"` by default, so it never blocks the host app's touches. Interactive modes are opt-in.
-- `useGameFX()` returns the typed API (`play`, `attach`, `remeasure`, `fromWindow`, `cancelAll`, `activeCount`, `ready`, `assets`, and `engine` for scene nodes, sprites, animations and timelines). Custom effects are registered through the provider's `effects` prop, scene layers through `layers`, images through `assets` (loaded with `useGameFXAssets`).
+- `useGameFX()` returns the typed API (`play`, `attach`, `getTarget`, `animate`, `timeline`, `cue`, `throw`, `throwAndExplode`, `remeasure`, `fromWindow`, `cancelAll`, `activeCount`, `quality`, `setQuality`, `reducedMotion`, `ready`, `assets`, and `engine` for scene nodes, sprites, animations and timelines). Custom effects are registered through the provider's `effects` prop, scene layers through `layers`, images through `assets` (loaded with `useGameFXAssets`).
 - `<GameFXTarget id>` anchors effects to an ordinary view (see above).
 - Unmounting the provider cancels every playback and effect, destroys the scene (ending attachments), and stops frame callbacks. No effect or marker callback fires after unmount.
-- Reduced motion (`AccessibilityInfo`) and a quality setting are planned provider options (not in Phase 1).
+- Quality (`quality`, `adaptiveQuality`) and reduced motion (`reducedMotion`, default from `AccessibilityInfo`, live) are provider props since Phase 4.
 
 ## Effects and extensibility
 
 - A typed **registry** maps preset names to definitions. `fx.play('confetti', params)` is type-checked against that preset's parameter type.
 - Consumers register custom presets through the same public API that built-in presets use. They never modify engine internals.
 - Parameters are validated at `play()` time with clear error messages.
+
+## Effects runtime and composition (Phase 4)
+
+Details and examples: [EFFECTS.md](EFFECTS.md).
+
+- **Contract**: an effect instance is created by its definition with validated parameters and an `EffectContext` (seeded `random`, quality profile, reduced motion, engine services). The engine calls `update(elapsedMs)` with absolute effect time, reads `drawables` and `done`, and calls `dispose()` once. Optional `stop()` (graceful end) and `setParams()` (runtime updates) back `handle.stop()` and `handle.update()`.
+- **Layers of reuse**: primitives (`particles` emitter effect, `flash`, `shockwave`, `screen-shake`), presets built on them (`confetti`, `golden-sparks`, `smoke`, `trail` are emitter configurations), composites (`defineComposite`: `explosion`, `victory`) that run child effects on one clock behind one handle and route parameter updates per layer, and the hand-written `fire-border` and `glow-pulse`.
+- **Placement**: one `Placement` helper resolves `position` or `target` (+ `offset`, `follow`) for every effect, so all effects follow moving and rotating targets the same way.
+- **Composition on the timeline**: `EffectCue` is a playable that starts an effect at its exact timeline time from the playback's event dispatch; the effect belongs to the playback (cancelled with it unless `detached`). `ThrowMotion` (`src/motion`) is an analytical ballistic playable with `launch`, `peak` and `impact` markers. `throwAndExplode` builds a timeline from these, plus a watcher that cancels it if the target is destroyed, and restores the view synchronously when cancelled.
+- **Rules**: replacement keys, `zIndex` ordering, cue ownership, target unmount and error isolation are listed in EFFECTS.md §6.
+- **Camera and offsets**: `screen-shake` adds removable offsets, either to the engine camera (applied to the whole overlay picture, around its centre) or to a target's transform binding (the native view shakes). Offsets are summed with the motion and removed exactly, so layout is never modified.
+- **Particles**: `ParticleEmitter` simulates bursts and continuous emission from point, line, circle, rect and path shapes, in world or local space, with curves over life. State lives in struct-of-arrays typed buffers taken from a shared, capacity-keyed pool. Randomness is seeded.
+- **Shaders**: SkSL chunks (`SHADER_CHUNKS`) are composed into definitions (`composeShader`); the renderer compiles each source once (cache keyed by source), feeds `time` and `size`, and falls back to a color with a one-time warning when runtime shaders are missing. Effects consult the renderer capabilities the overlay reports to the engine.
+- **Quality**: `low`/`medium`/`high` profiles scale particle counts and switch shaders, glow and secondary details; `AdaptiveQuality` steps the level from windowed frame times; reduced motion disables shakes, dims flashes and halves generic particle counts.
 
 ## Packaging and consumer contract
 

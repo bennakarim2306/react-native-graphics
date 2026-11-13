@@ -3,7 +3,7 @@ export type { GameFXProviderProps } from './GameFXProvider';
 export { GameFXOverlay } from './GameFXOverlay';
 export type { GameFXOverlayProps } from './GameFXOverlay';
 export { useGameFX, useGameFXEngine } from './useGameFX';
-export type { AttachableEffect, GameFX, PlayOptions } from './useGameFX';
+export type { AttachableEffect, AttachEffectSpec, GameFX } from './useGameFX';
 export { GameFXTarget } from './GameFXTarget';
 export type { GameFXTargetProps } from './GameFXTarget';
 export { createSkiaImageLoader } from './skiaImageLoader';

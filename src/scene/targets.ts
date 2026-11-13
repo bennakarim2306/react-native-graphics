@@ -1,3 +1,5 @@
+import type { AnimationTarget } from '../animation/target';
+import type { TransformOffset } from '../runtime/effect';
 import { Emitter, rethrowAsync } from '../runtime/emitter';
 import type { ErrorReporter, Unsubscribe } from '../runtime/emitter';
 import { InvalidOptionError } from '../runtime/errors';
@@ -22,6 +24,139 @@ export interface TargetTransform {
   readonly scaleY?: number;
 }
 
+/** Properties of a target's motion that animations can drive. */
+export type TargetMotionProperty = 'x' | 'y' | 'rotation' | 'scale' | 'scaleX' | 'scaleY' | 'opacity';
+
+/** The full transform a host should apply to its view (relative to its layout position). */
+export interface TargetViewTransform {
+  readonly translateX: number;
+  readonly translateY: number;
+  /** Degrees, around the view's centre. */
+  readonly rotation: number;
+  readonly scaleX: number;
+  readonly scaleY: number;
+  readonly opacity: number;
+}
+
+/**
+ * Explicit transform binding of a host target. The engine owns these values: animate them
+ * (`engine.animate(target.motion, { x: 120, rotation: 360 })`) and `GameFXTarget` applies them
+ * to the view on the UI thread, while effects attached to the target see exactly the same
+ * transform. `x`/`y` are offsets in points from the view's layout position; rotation and
+ * scale apply around the view's centre.
+ */
+export class TargetMotion implements AnimationTarget<TargetMotionProperty> {
+  private values = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1 };
+  private dead = false;
+
+  constructor(private readonly changed: () => void) {}
+
+  get destroyed(): boolean {
+    return this.dead;
+  }
+
+  get x(): number {
+    return this.values.x;
+  }
+  set x(v: number) {
+    this.set('x', v);
+  }
+  get y(): number {
+    return this.values.y;
+  }
+  set y(v: number) {
+    this.set('y', v);
+  }
+  get rotation(): number {
+    return this.values.rotation;
+  }
+  set rotation(v: number) {
+    this.set('rotation', v);
+  }
+  get scaleX(): number {
+    return this.values.scaleX;
+  }
+  set scaleX(v: number) {
+    this.set('scaleX', v);
+  }
+  get scaleY(): number {
+    return this.values.scaleY;
+  }
+  set scaleY(v: number) {
+    this.set('scaleY', v);
+  }
+  /** Uniform scale (reads scaleX). */
+  get scale(): number {
+    return this.values.scaleX;
+  }
+  set scale(v: number) {
+    this.set('scaleX', v);
+    this.set('scaleY', v);
+  }
+  get opacity(): number {
+    return this.values.opacity;
+  }
+  set opacity(v: number) {
+    this.set('opacity', Math.min(1, Math.max(0, v)));
+  }
+
+  /** Back to no offset, no rotation, scale 1, opacity 1. */
+  reset(): void {
+    this.values = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, opacity: 1 };
+    this.changed();
+  }
+
+  hasProperty(name: string): name is TargetMotionProperty {
+    return ['x', 'y', 'rotation', 'scale', 'scaleX', 'scaleY', 'opacity'].includes(name);
+  }
+  getProperty(name: TargetMotionProperty): number {
+    return this[name];
+  }
+  setProperty(name: TargetMotionProperty, value: number): void {
+    this[name] = value;
+  }
+  expandProperty(name: TargetMotionProperty): readonly TargetMotionProperty[] {
+    return name === 'scale' ? ['scaleX', 'scaleY'] : [name];
+  }
+
+  /** @internal */
+  kill(): void {
+    this.dead = true;
+  }
+
+  private set(key: keyof TargetMotion['values'], value: number): void {
+    if (this.dead || !Number.isFinite(value) || this.values[key] === value) return;
+    this.values[key] = value;
+    this.changed();
+  }
+}
+
+/** A registered host target. */
+export interface TargetHandle {
+  readonly id: string;
+  /** Proxy node: attach effects to it. Follows layout and motion. */
+  readonly node: SceneNode;
+  /** Explicit transform binding applied to the host view. */
+  readonly motion: TargetMotion;
+}
+
+/**
+ * Anything that names what an effect attaches to: a host target id (`<GameFXTarget id>`), the
+ * handle `getTarget(id)` returns, or a scene node.
+ */
+export type TargetRef = string | SceneNode | TargetHandle;
+
+/** True for the handle returned by `getTarget(id)`. */
+export function isTargetHandle(value: unknown): value is TargetHandle {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { id?: unknown }).id === 'string' &&
+    'node' in value &&
+    'motion' in value
+  );
+}
+
 export interface TargetEvents {
   /** A target was registered (its proxy node exists, maybe not measured yet). */
   added: { readonly id: string; readonly node: SceneNode };
@@ -30,10 +165,18 @@ export interface TargetEvents {
   removed: { readonly id: string };
   /** Hosts should measure their views again (for example after scrolling). Empty id = all. */
   remeasure: { readonly id: string | null };
+  /** The transform a host must apply to its view changed (motion or offsets such as shakes). */
+  transform: { readonly id: string; readonly transform: TargetViewTransform };
+}
+
+interface OffsetEntry extends TransformOffset {
+  removed: boolean;
 }
 
 interface TargetEntry {
   readonly binding: HostViewBinding;
+  readonly motion: TargetMotion;
+  readonly offsets: Set<OffsetEntry>;
   window: WindowRect | null;
   transform: TargetTransform;
   measured: boolean;
@@ -87,7 +230,18 @@ export class TargetRegistry {
     if (typeof id !== 'string' || id.length === 0) throw new InvalidOptionError('Target ids must be non-empty strings.');
     if (this.entries.has(id)) throw new InvalidOptionError(`A target with id "${id}" is already registered.`);
     const node = this.scene.createNode({ name: `target:${id}`, size: { width: 0, height: 0 } });
-    this.entries.set(id, { binding: createHostViewBinding(node), window: null, transform: {}, measured: false });
+    const motion = new TargetMotion(() => {
+      const current = this.entries.get(id);
+      if (current) this.syncMotion(id, current);
+    });
+    this.entries.set(id, {
+      binding: createHostViewBinding(node),
+      motion,
+      offsets: new Set(),
+      window: null,
+      transform: {},
+      measured: false,
+    });
     this.emitter.emit('added', { id, node });
     return node;
   }
@@ -107,6 +261,9 @@ export class TargetRegistry {
     const entry = this.entries.get(id);
     if (!entry) return;
     this.entries.delete(id);
+    entry.motion.kill();
+    for (const offset of entry.offsets) offset.removed = true;
+    entry.offsets.clear();
     entry.binding.dispose();
     this.emitter.emit('removed', { id });
   }
@@ -114,6 +271,75 @@ export class TargetRegistry {
   /** The proxy node of a target, or undefined. */
   node(id: string): SceneNode | undefined {
     return this.entries.get(id)?.binding.node;
+  }
+
+  /** The explicit transform binding of a target, or undefined. */
+  motion(id: string): TargetMotion | undefined {
+    return this.entries.get(id)?.motion;
+  }
+
+  /** Id, proxy node and motion of a target, or undefined. */
+  get(id: string): TargetHandle | undefined {
+    const entry = this.entries.get(id);
+    return entry ? { id, node: entry.binding.node, motion: entry.motion } : undefined;
+  }
+
+  /** The id of the target whose proxy node is `node`, or undefined. */
+  idOf(node: SceneNode): string | undefined {
+    for (const [id, entry] of this.entries) if (entry.binding.node === node) return id;
+    return undefined;
+  }
+
+  /**
+   * Adds a temporary offset to a target's transform (for example a shake). Offsets add to the
+   * motion; removing one restores the transform exactly. Returns null for unknown ids.
+   */
+  addOffset(id: string): TransformOffset | null {
+    const entry = this.entries.get(id);
+    if (!entry) return null;
+    const values = { x: 0, y: 0, rotation: 0 };
+    const sync = () => {
+      const current = this.entries.get(id);
+      if (current === entry && !offset.removed) this.syncMotion(id, entry);
+    };
+    const offset: OffsetEntry = {
+      removed: false,
+      get x() {
+        return values.x;
+      },
+      set x(v: number) {
+        values.x = v;
+        sync();
+      },
+      get y() {
+        return values.y;
+      },
+      set y(v: number) {
+        values.y = v;
+        sync();
+      },
+      get rotation() {
+        return values.rotation;
+      },
+      set rotation(v: number) {
+        values.rotation = v;
+        sync();
+      },
+      remove: () => {
+        if (offset.removed) return;
+        offset.removed = true;
+        entry.offsets.delete(offset);
+        if (this.entries.get(id) === entry) this.syncMotion(id, entry);
+      },
+    };
+    entry.offsets.add(offset);
+    return offset;
+  }
+
+  /** The transform the host view of `id` should have now, or undefined. */
+  viewTransform(id: string): TargetViewTransform | undefined {
+    const entry = this.entries.get(id);
+    return entry ? this.computeView(entry) : undefined;
   }
 
   /** True once the target has been measured at least once. */
@@ -154,13 +380,45 @@ export class TargetRegistry {
     };
   }
 
+  private computeView(entry: TargetEntry): TargetViewTransform {
+    const m = entry.motion;
+    let x = m.x;
+    let y = m.y;
+    let rotation = m.rotation;
+    for (const offset of entry.offsets) {
+      x += offset.x;
+      y += offset.y;
+      rotation += offset.rotation;
+    }
+    return { translateX: x, translateY: y, rotation, scaleX: m.scaleX, scaleY: m.scaleY, opacity: m.opacity };
+  }
+
+  /** Places the proxy node from the layout plus the motion and offsets. */
+  private placeNode(entry: TargetEntry): void {
+    const node = entry.binding.node;
+    if (node.destroyed || !entry.window) return;
+    const layout = this.toLayout(entry);
+    const view = this.computeView(entry);
+    node.x = layout.x + layout.width / 2 + view.translateX;
+    node.y = layout.y + layout.height / 2 + view.translateY;
+    node.rotation = (entry.transform.rotation ?? 0) + view.rotation;
+    node.scaleX = (entry.transform.scaleX ?? 1) * view.scaleX;
+    node.scaleY = (entry.transform.scaleY ?? 1) * view.scaleY;
+    node.opacity = view.opacity;
+  }
+
+  private syncMotion(id: string, entry: TargetEntry): void {
+    this.placeNode(entry);
+    this.emitter.emit('transform', { id, transform: this.computeView(entry) });
+  }
+
   private sync(id: string, entry: TargetEntry): void {
     if (!entry.window) return;
     const layout = this.toLayout(entry);
     const node = entry.binding.node;
     if (node.destroyed) return;
-    entry.binding.update(layout);
     node.size = { width: layout.width, height: layout.height };
+    this.placeNode(entry);
     entry.measured = true;
     this.emitter.emit('layout', { id, layout });
   }

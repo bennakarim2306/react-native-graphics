@@ -10,14 +10,16 @@ import type { AttachmentHandle, AttachmentState } from '../scene/attachment';
 import { composeTransform } from '../scene/matrix';
 import { SceneNode } from '../scene/node';
 import type { SceneCommand, SceneDrawable } from '../scene/scene';
+import type { TargetRef } from '../scene/targets';
 
 /** Parameters shared by the border effects. */
 export interface BorderParams {
   /**
    * Node to outline. Its size comes from its shape bounds or its explicit `size` (a proxy node
    * of a React Native view has one). The border follows the node's position, rotation and scale.
+   * A `<GameFXTarget>` id also works: the engine resolves it to the target's proxy node.
    */
-  readonly target: SceneNode;
+  readonly target: TargetRef;
   /** Gap between the target's edge and the border, in points. Default 4. */
   readonly padding?: number;
   /** Corner radius of the border in points. Default 12. */
@@ -206,8 +208,8 @@ function shaderBorder(name: string, defaultShader: ShaderDefinition, intensityUn
   });
 }
 
-/** Animated "energy" outline drawn with a runtime shader (falls back to a solid color). */
+/**
+ * Animated outline drawn with a runtime shader (falls back to a solid color). `shader: 'fire'`
+ * gives the older flickering-line look; the full flame effect is `fire-border`.
+ */
 export const energyBorder: EffectDefinition<ShaderBorderParams> = shaderBorder('energy-border', energyShader, 'speed');
-
-/** Flickering fire outline drawn with a runtime shader (falls back to a solid color). */
-export const fireBorder: EffectDefinition<ShaderBorderParams> = shaderBorder('fire-border', fireShader, 'intensity');

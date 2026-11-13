@@ -1,5 +1,7 @@
 import {
   BlendMode as SkBlendMode,
+  BlurStyle,
+  ColorChannel,
   ClipOp,
   FilterMode,
   MipmapMode,
@@ -13,6 +15,8 @@ import type {
   SkColor,
   SkImage,
   SkImageFilter,
+  SkMaskFilter,
+  SkRSXform,
   SkPaint,
   SkPath,
   SkPicture,
@@ -25,6 +29,7 @@ import type { NodeEffect } from '../../graphics/effects';
 import type { BlendMode, Fill, Stroke } from '../../graphics/paint';
 import type { PathData } from '../../graphics/path';
 import { shaderUniformValues } from '../../graphics/shader';
+import { displacementShader } from '../../graphics/shaderLib';
 import type { ShaderDefinition } from '../../graphics/shader';
 import { isParticleDrawable } from '../../particles/burst';
 import type { ParticleDrawable } from '../../particles/burst';
@@ -51,6 +56,8 @@ export type SkiaFactory = Pick<
   | 'ImageFilter'
   | 'ColorFilter'
   | 'RuntimeEffect'
+  | 'RSXform'
+  | 'MaskFilter'
 >;
 
 export interface RendererCapabilities {
@@ -123,6 +130,15 @@ interface CachedPath {
   path: SkPath | null;
 }
 
+/** Whole-overlay offset applied when recording (from `FrameEvent.camera`). */
+export interface CameraTransform {
+  readonly x: number;
+  readonly y: number;
+  readonly rotation: number;
+  readonly pivotX?: number;
+  readonly pivotY?: number;
+}
+
 /**
  * Draws engine drawables with React Native Skia. It is the only place that knows Skia types:
  * the engine describes shapes, paints, clips, layers and effects in its own terms, and this
@@ -134,10 +150,14 @@ export class SkiaEffectsRenderer {
   private readonly paint: SkPaint;
   private readonly layerPaint: SkPaint;
   private readonly colorCache = new Map<string, SkColor>();
-  private readonly effectCache = new Map<ShaderDefinition, SkRuntimeEffect | null>();
+  /** Compiled runtime effects by SkSL source: equal sources compile once. */
+  private readonly effectCache = new Map<string, SkRuntimeEffect | null>();
+  private compiles = 0;
   private readonly gradientCache = new WeakMap<object, SkShader>();
   private readonly pathCache = new WeakMap<PathData, CachedPath>();
   private readonly reported = new Set<string>();
+  private readonly particleColor = new Float32Array(4);
+  private softMaskFilter: SkMaskFilter | null = null;
   private disposed = false;
 
   constructor(
@@ -151,7 +171,7 @@ export class SkiaEffectsRenderer {
       kinds: ['scene', 'particles'],
       shapes: ['rect', 'circle', 'ellipse', 'path', 'image'],
       runtimeShaders: typeof (skia.RuntimeEffect as { Make?: unknown } | undefined)?.Make === 'function',
-      nodeEffects: ['glow', 'blur', 'drop-shadow', 'color-matrix'],
+      nodeEffects: ['glow', 'blur', 'drop-shadow', 'color-matrix', 'distort'],
       blendModes: Object.keys(BLEND) as BlendMode[],
       gradients: true,
       clipping: true,
@@ -176,11 +196,22 @@ export class SkiaEffectsRenderer {
     return { drawnPrimitives, skippedDrawables };
   }
 
-  /** Records the drawables into a picture that a `<Picture>` element can display. */
-  record(drawables: readonly Drawable[], bounds?: SkRect): SkPicture {
+  /**
+   * Records the drawables into a picture that a `<Picture>` element can display. `camera`
+   * offsets everything (screen shake): a translation plus a rotation in degrees around
+   * `pivotX`/`pivotY` (usually the overlay centre).
+   */
+  record(drawables: readonly Drawable[], bounds?: SkRect, camera?: CameraTransform): SkPicture {
     const recorder = this.skia.PictureRecorder();
     const canvas = recorder.beginRecording(bounds);
+    const moved = camera !== undefined && (camera.x !== 0 || camera.y !== 0 || camera.rotation !== 0);
+    if (moved) {
+      canvas.save();
+      canvas.translate(camera.x, camera.y);
+      if (camera.rotation !== 0) canvas.rotate(camera.rotation, camera.pivotX ?? 0, camera.pivotY ?? 0);
+    }
     this.draw(canvas, drawables);
+    if (moved) canvas.restore();
     return recorder.finishRecordingAsPicture();
   }
 
@@ -196,20 +227,124 @@ export class SkiaEffectsRenderer {
   // --- Particles --------------------------------------------------------------------------
 
   private drawParticles(canvas: SkCanvas, particles: ParticleDrawable): number {
+    if (particles.aliveCount === 0) return 0;
+    const look = particles.look ?? 'circle';
+    if (look === 'image') return this.drawImageParticles(canvas, particles);
     let drawn = 0;
     this.resetPaint();
+    const p = this.paint;
+    p.setBlendMode(BLEND[particles.blendMode ?? 'normal']);
+    const restore = particles.matrix ? canvas.save() : -1;
+    if (particles.matrix) canvas.concat(toSkiaMatrix(particles.matrix));
+    if (look === 'spark' || look === 'ring') {
+      p.setStyle(PaintStyle.Stroke);
+      p.setStrokeCap(StrokeCap.Round);
+    }
+    if (look === 'soft') p.setMaskFilter(this.softMask());
+    const rgb = particles.red && particles.green && particles.blue ? particles : null;
+    const aspect = particles.aspect ?? 1;
+    const stretch = particles.stretch ?? 0.04;
+    const c = this.particleColor;
     for (let i = 0; i < particles.count; i++) {
       if (particles.alive[i] !== 1) continue;
       const opacity = particles.opacity[i] ?? 0;
       const radius = particles.radius[i] ?? 0;
       if (opacity <= 0 || radius <= 0) continue;
-      const color = this.color(particles.colors[particles.colorIndex[i] ?? 0] ?? '#FFFFFF');
-      this.paint.setColor(color);
-      this.paint.setAlphaf((color[3] ?? 1) * opacity);
-      canvas.drawCircle(particles.x[i] ?? 0, particles.y[i] ?? 0, radius, this.paint);
+      if (rgb) {
+        c[0] = rgb.red?.[i] ?? 1;
+        c[1] = rgb.green?.[i] ?? 1;
+        c[2] = rgb.blue?.[i] ?? 1;
+        c[3] = opacity;
+        p.setColor(c);
+      } else {
+        const color = this.color(particles.colors?.[particles.colorIndex?.[i] ?? 0] ?? '#FFFFFF');
+        p.setColor(color);
+        p.setAlphaf((color[3] ?? 1) * opacity);
+      }
+      const x = particles.x[i] ?? 0;
+      const y = particles.y[i] ?? 0;
+      switch (look) {
+        case 'square': {
+          const rotation = particles.rotation?.[i] ?? 0;
+          canvas.save();
+          canvas.translate(x, y);
+          if (rotation !== 0) canvas.rotate(rotation, 0, 0);
+          canvas.drawRect(this.skia.XYWHRect(-radius * aspect, -radius, radius * 2 * aspect, radius * 2), p);
+          canvas.restore();
+          break;
+        }
+        case 'spark': {
+          const vx = particles.vx?.[i] ?? 0;
+          const vy = particles.vy?.[i] ?? 0;
+          p.setStrokeWidth(radius);
+          canvas.drawLine(x, y, x - vx * stretch, y - vy * stretch, p);
+          break;
+        }
+        case 'ring':
+          p.setStrokeWidth(Math.max(0.5, radius * 0.3));
+          canvas.drawCircle(x, y, radius, p);
+          break;
+        case 'soft':
+          // A unit circle blurred in its own (scaled) coordinates: one mask filter for all sizes.
+          canvas.save();
+          canvas.translate(x, y);
+          canvas.scale(radius, radius);
+          canvas.drawCircle(0, 0, 0.7, p);
+          canvas.restore();
+          break;
+        default:
+          canvas.drawCircle(x, y, radius, p);
+      }
       drawn++;
     }
+    if (look === 'soft') p.setMaskFilter(null);
+    if (restore >= 0) canvas.restoreToCount(restore);
     return drawn;
+  }
+
+  /** Image particles: one `drawAtlas` call for all live particles. */
+  private drawImageParticles(canvas: SkCanvas, particles: ParticleDrawable): number {
+    const native = particles.image?.native as SkImage | undefined;
+    if (!particles.image || !native) {
+      this.warn('image-unavailable', particles.image?.id ?? 'particles');
+      return 0;
+    }
+    const full = { x: 0, y: 0, width: particles.image.width, height: particles.image.height };
+    const srcs: SkRect[] = [];
+    const xforms: SkRSXform[] = [];
+    const colors: SkColor[] = [];
+    for (let i = 0; i < particles.count; i++) {
+      if (particles.alive[i] !== 1) continue;
+      const opacity = particles.opacity[i] ?? 0;
+      const radius = particles.radius[i] ?? 0;
+      if (opacity <= 0 || radius <= 0) continue;
+      const frame = particles.frames?.[particles.frame?.[i] ?? 0] ?? full;
+      const scale = (radius * 2) / Math.max(frame.width, frame.height, 1);
+      const angle = ((particles.rotation?.[i] ?? 0) * Math.PI) / 180;
+      const scos = Math.cos(angle) * scale;
+      const ssin = Math.sin(angle) * scale;
+      const hw = frame.width / 2;
+      const hh = frame.height / 2;
+      const x = particles.x[i] ?? 0;
+      const y = particles.y[i] ?? 0;
+      srcs.push(this.skia.XYWHRect(frame.x, frame.y, frame.width, frame.height));
+      xforms.push(this.skia.RSXform(scos, ssin, x - (scos * hw - ssin * hh), y - (ssin * hw + scos * hh)));
+      const tint = Float32Array.of(particles.red?.[i] ?? 1, particles.green?.[i] ?? 1, particles.blue?.[i] ?? 1, opacity);
+      colors.push(tint);
+    }
+    if (srcs.length === 0) return 0;
+    this.resetPaint();
+    this.paint.setBlendMode(BLEND[particles.blendMode ?? 'normal']);
+    const restore = particles.matrix ? canvas.save() : -1;
+    if (particles.matrix) canvas.concat(toSkiaMatrix(particles.matrix));
+    canvas.drawAtlas(native, srcs, xforms, this.paint, SkBlendMode.Modulate, colors);
+    if (restore >= 0) canvas.restoreToCount(restore);
+    return srcs.length;
+  }
+
+  private softMask(): SkMaskFilter {
+    if (!this.softMaskFilter) this.softMaskFilter = this.skia.MaskFilter.MakeBlur(BlurStyle.Normal, 0.3, true);
+    return this.softMaskFilter;
   }
 
   // --- Scene ------------------------------------------------------------------------------
@@ -222,7 +357,7 @@ export class SkiaEffectsRenderer {
       if (command.op === 'draw') {
         if (this.drawItem(canvas, command.item, scene.time)) drawn++;
       } else if (command.op === 'begin-group') {
-        saves.push(this.beginGroup(canvas, command));
+        saves.push(this.beginGroup(canvas, command, scene.time));
       } else {
         const count = saves.pop();
         if (count !== undefined) canvas.restoreToCount(count);
@@ -234,11 +369,11 @@ export class SkiaEffectsRenderer {
     return drawn;
   }
 
-  private beginGroup(canvas: SkCanvas, group: SceneGroupCommand): number {
+  private beginGroup(canvas: SkCanvas, group: SceneGroupCommand, time: number): number {
     const count = canvas.save();
     if (group.clip) this.clipTo(canvas, group.clip, group.clipMatrix);
     if (group.layer) {
-      this.layerPaint.setImageFilter(this.imageFilter(group.effects));
+      this.layerPaint.setImageFilter(this.imageFilter(group.effects, time));
       this.layerPaint.setBlendMode(BLEND[group.blendMode]);
       canvas.saveLayer(this.layerPaint);
     }
@@ -410,7 +545,7 @@ export class SkiaEffectsRenderer {
     p.setColor(this.color('#000000'));
   }
 
-  private imageFilter(effects: readonly NodeEffect[]): SkImageFilter | null {
+  private imageFilter(effects: readonly NodeEffect[], time: number): SkImageFilter | null {
     let filter: SkImageFilter | null = null;
     const F = this.skia.ImageFilter;
     for (const effect of effects) {
@@ -438,15 +573,28 @@ export class SkiaEffectsRenderer {
         case 'color-matrix':
           filter = F.MakeColorFilter(this.skia.ColorFilter.MakeMatrix([...effect.matrix]), filter);
           break;
+        case 'distort': {
+          const runtime = this.runtimeEffect(displacementShader);
+          if (!runtime || effect.amount === 0) break;
+          const uniforms = shaderUniformValues(displacementShader, { frequency: effect.frequency ?? 0.06, speed: effect.speed ?? 1 }, {
+            time: time / 1000,
+            width: 0,
+            height: 0,
+          });
+          const field = F.MakeShader(runtime.makeShader(uniforms));
+          filter = F.MakeDisplacementMap(ColorChannel.R, ColorChannel.G, effect.amount * 2, field, filter);
+          break;
+        }
       }
     }
     return filter;
   }
 
   private runtimeEffect(shader: ShaderDefinition): SkRuntimeEffect | null {
-    if (this.effectCache.has(shader)) return this.effectCache.get(shader) ?? null;
+    if (this.effectCache.has(shader.source)) return this.effectCache.get(shader.source) ?? null;
     let effect: SkRuntimeEffect | null = null;
     if (this.capabilities.runtimeShaders) {
+      this.compiles++;
       try {
         effect = this.skia.RuntimeEffect.Make(shader.source);
       } catch {
@@ -454,8 +602,18 @@ export class SkiaEffectsRenderer {
       }
     }
     if (!effect) this.warn('shader-compile-failed', shader.name);
-    this.effectCache.set(shader, effect);
+    this.effectCache.set(shader.source, effect);
     return effect;
+  }
+
+  /** Shader programs compiled so far and programs currently cached (for tests and profiling). */
+  get shaderStats(): { readonly compiles: number; readonly cached: number } {
+    return { compiles: this.compiles, cached: this.effectCache.size };
+  }
+
+  /** Compiles shaders ahead of time (for example while a screen opens) to avoid a first-use hitch. */
+  precompile(shaders: readonly ShaderDefinition[]): void {
+    for (const shader of shaders) this.runtimeEffect(shader);
   }
 
   private path(data: PathData): SkPath | null {

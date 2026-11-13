@@ -1,4 +1,8 @@
+import type { ImageAsset } from '../assets/assets';
+import type { BlendMode } from '../graphics/paint';
+import type { Rect } from '../graphics/path';
 import type { Drawable } from '../runtime/effect';
+import type { Matrix2D } from '../scene/matrix';
 import { InvalidOptionError } from '../runtime/errors';
 import type { Random } from '../runtime/rng';
 
@@ -49,9 +53,35 @@ export interface ParticleDrawable extends Drawable {
   readonly radius: Float32Array;
   readonly opacity: Float32Array;
   readonly alive: Uint8Array;
-  readonly colorIndex: Uint8Array;
-  readonly colors: readonly string[];
+  /** Palette mode: color of particle i is `colors[colorIndex[i]]`. */
+  readonly colorIndex?: Uint8Array;
+  readonly colors?: readonly string[];
+  /** Per-particle color mode (0 to 1). Used instead of the palette when present. */
+  readonly red?: Float32Array;
+  readonly green?: Float32Array;
+  readonly blue?: Float32Array;
+  /** Rotation in degrees (squares, sparks, images). */
+  readonly rotation?: Float32Array;
+  /** Current velocity in points per second (spark streaks). */
+  readonly vx?: Float32Array;
+  readonly vy?: Float32Array;
+  /** Default `circle`. */
+  readonly look?: ParticleLookKind;
+  /** Width to height ratio of squares. */
+  readonly aspect?: number;
+  /** Spark streak length in seconds of motion. */
+  readonly stretch?: number;
+  readonly blendMode?: BlendMode;
+  /** Local-space particles: transform from particle space to overlay space. */
+  readonly matrix?: Matrix2D | undefined;
+  /** Image particles. */
+  readonly image?: ImageAsset | undefined;
+  readonly frames?: readonly Rect[] | undefined;
+  readonly frame?: Uint16Array;
 }
+
+/** Built-in particle shapes. */
+export type ParticleLookKind = 'circle' | 'square' | 'spark' | 'ring' | 'soft' | 'image';
 
 export function isParticleDrawable(drawable: Drawable): drawable is ParticleDrawable {
   return drawable.kind === 'particles';
@@ -72,8 +102,8 @@ export class ParticleBurst implements ParticleDrawable {
   readonly alive: Uint8Array;
   readonly colorIndex: Uint8Array;
   readonly colors: readonly string[];
-  private readonly vx: Float32Array;
-  private readonly vy: Float32Array;
+  private readonly velX: Float32Array;
+  private readonly velY: Float32Array;
   private readonly lifetime: Float32Array;
   private aliveTotal: number;
   private disposed = false;
@@ -92,15 +122,15 @@ export class ParticleBurst implements ParticleDrawable {
     this.opacity = new Float32Array(n);
     this.alive = new Uint8Array(n);
     this.colorIndex = new Uint8Array(n);
-    this.vx = new Float32Array(n);
-    this.vy = new Float32Array(n);
+    this.velX = new Float32Array(n);
+    this.velY = new Float32Array(n);
     this.lifetime = new Float32Array(n);
     const toRad = Math.PI / 180;
     for (let i = 0; i < n; i++) {
       const angle = (config.direction + (random.next() - 0.5) * config.spread) * toRad;
       const speed = random.range(config.speedMin, config.speedMax);
-      this.vx[i] = Math.cos(angle) * speed;
-      this.vy[i] = Math.sin(angle) * speed;
+      this.velX[i] = Math.cos(angle) * speed;
+      this.velY[i] = Math.sin(angle) * speed;
       this.lifetime[i] = random.range(config.lifetimeMin, config.lifetimeMax);
       this.colorIndex[i] = random.int(this.colors.length);
     }
@@ -141,8 +171,8 @@ export class ParticleBurst implements ParticleDrawable {
       }
       const progress = elapsed / life;
       this.alive[i] = 1;
-      this.x[i] = c.originX + (this.vx[i] ?? 0) * t + c.gravityX * halfT2;
-      this.y[i] = c.originY + (this.vy[i] ?? 0) * t + c.gravityY * halfT2;
+      this.x[i] = c.originX + (this.velX[i] ?? 0) * t + c.gravityX * halfT2;
+      this.y[i] = c.originY + (this.velY[i] ?? 0) * t + c.gravityY * halfT2;
       this.radius[i] = c.radius * (c.scaleStart + (c.scaleEnd - c.scaleStart) * progress);
       this.opacity[i] = c.opacityStart + (c.opacityEnd - c.opacityStart) * progress;
       alive++;

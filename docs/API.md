@@ -1,4 +1,4 @@
-# Public API (Phase 3)
+# Public API (Phase 4)
 
 Everything below is exported from `react-native-graphics`. The platform-independent subset (engine, scene graph, animations, clocks, graphics descriptions, assets, sprites, particles, effect definitions) is also exported from `react-native-graphics/core`, which does not import React Native, React or Skia. The API is **pre-1.0 and may change**.
 
@@ -28,8 +28,11 @@ Creates one engine when it mounts and disposes it when it unmounts. Disposal can
 | `assetBudget` | `number` (bytes) | 64 MiB soft budget for decoded images |
 | `assetManager` | `AssetManager` | none. Share one manager between providers (you dispose it) |
 | `imageLoader` | `ImageLoader` | Skia loader (`createSkiaImageLoader()`) |
+| `quality` | `'low' \| 'medium' \| 'high'` or a `QualityProfile` | `high`. See [EFFECTS.md §8](EFFECTS.md#8-quality-reduced-motion-and-capabilities) |
+| `adaptiveQuality` | `boolean \| AdaptiveQualityOptions` | off. Steps quality down when frames are slow (> 22 ms average), up when fast (< 14 ms) |
+| `reducedMotion` | `boolean \| 'system'` | `'system'`: follows the OS setting (`AccessibilityInfo`), live |
 
-Props are read once at mount.
+Props are read once at mount, except `quality` and `reducedMotion`, which apply to effects started after a change.
 
 ### `<GameFXOverlay>`
 
@@ -37,7 +40,7 @@ A transparent, absolutely positioned Skia canvas that draws the provider's scene
 
 ### `<GameFXTarget id>`
 
-Wraps its children in a `View` and anchors effects to it. The engine keeps a proxy scene node at the view's centre with the view's size.
+Wraps its children in an `Animated.View` (Reanimated) and anchors effects to it. The engine keeps a proxy scene node at the view's centre with the view's size, and a **transform binding** (`fx.getTarget(id).motion`: `x`, `y`, `rotation`, `scale`, `scaleX`, `scaleY`, `opacity`) that moves the real view through shared values, before its own style transform. Effects follow both. See [EFFECTS.md §7](EFFECTS.md#7-react-native-targets-and-the-transform-binding).
 
 | Prop | Type | Default |
 | --- | --- | --- |
@@ -46,7 +49,7 @@ Wraps its children in a `View` and anchors effects to it. The engine keeps a pro
 | `rotation`, `scale` | `number` | none. Known transform of the view (measurement is axis-aligned) |
 | `style`, `testID` | | |
 
-Measured on mount, on layout changes, on `fx.remeasure()` (call it from `onScroll`) and when the overlay moves. On unmount the proxy node is destroyed and attached effects end. The children are ordinary React Native views; Skia does not render them.
+Measured on mount, on layout changes, on `fx.remeasure()` (call it from `onScroll`) and when the overlay moves; measuring waits while the binding is not at identity, so the stored layout is always the untransformed one. On unmount the proxy node is destroyed, attached effects end, sequences on it cancel and the binding is discarded. The children are ordinary React Native views; Skia does not render them.
 
 ### `useGameFXAssets(ids)`
 
@@ -57,7 +60,15 @@ Measured on mount, on layout changes, on `fx.remeasure()` (call it from `onScrol
 | Member | Description |
 | --- | --- |
 | `play(name, params, options?)` | Starts an effect and returns an `EffectHandle`. Built-in names are type-checked. You can also pass an `EffectDefinition` instead of a name. `options.seed` makes one instance reproducible. |
-| `attach(target, effect, params?, options?)` | Starts an effect that follows a target: a `<GameFXTarget>` id or a scene node. Built-in attachable effects (`glow-border`, `energy-border`, `fire-border`) are type-checked. Throws `InvalidOptionError` for unknown ids. |
+| `attach(target, effect, params?, options?)`, `attach(target, { effect, ...params }, options?)` | Starts an effect that follows a target: a `<GameFXTarget>` id, its handle or a scene node (`TargetRef`). The 13 built-in effects that take a target are type-checked in both forms. Throws `InvalidOptionError` for unknown ids. |
+| `getTarget(id)` | `{ id, node, motion }` of a mounted target, or `undefined`. `node` is the proxy (effects, coordinates); `motion` is the transform binding of the real view. |
+| `animate(target, vars)` | Tweens and starts: a target id or handle animates the view's `motion`; a node or sprite its own properties. Returns the `Playback` (`await playback.finished`). |
+| `timeline(options?)` | A timeline on the engine clock (`add`, `mark`, `call`, then `play()`). |
+| `cue(effect, params, options?)` | A timeline item that starts an effect at its exact time; `params` may be a function evaluated then. Options `hold`, `detached`, `playWhenSkipped` and `PlayOptions`. |
+| `throw(target, options?)` | Analytical ballistic motion (markers `launch`, `peak`, `impact`) of a target or node, for timelines. |
+| `throwAndExplode(target, options?)` | The reusable throw → impact → explosion + shake → settle sequence. Returns `{ playback, timeline, explosion, shake }`. |
+| `quality`, `setQuality(level)` | Current quality level; change it for effects started afterwards. |
+| `reducedMotion` | Whether effects run in reduced-motion mode. |
 | `remeasure(id?)` | Asks targets (all, or one) to measure again, for example after scrolling. |
 | `fromWindow(point)` | Window point → canvas point. |
 | `assets` | The provider's `AssetManager` (or `null` until `ready`). |
@@ -69,6 +80,8 @@ Measured on mount, on layout changes, on `fx.remeasure()` (call it from `onScrol
 It throws if used outside a `GameFXProvider`. `useGameFXEngine()` returns the underlying `Engine` (or `null` during the first render), for example to listen to `effectStart` or `effectEnd`.
 
 ## Effects
+
+Fifteen effects are built in: `fire-border`, `explosion`, `confetti`, `golden-sparks`, `smoke`, `trail`, `glow-pulse`, `shockwave`, `flash`, `screen-shake`, `victory`, `particles` (the generic emitter), `particle-burst`, `glow-border` and `energy-border`. Their parameters, defaults and runtime updates are listed in [EFFECTS.md §2](EFFECTS.md#2-built-in-effects); the particle emitter in §3; shaders in §4. `PlayOptions` (`seed`, `zIndex`, `key`, `quality`) apply to all of them.
 
 ### `particle-burst`
 
@@ -89,7 +102,9 @@ A one-shot radial burst. Every particle is spawned at `position` and moves balli
 | `opacity` | `{ from, to }` | `{ from: 1, to: 0 }` | 0 to 1 |
 | `colors` | `string[]` | warm gold palette | 1 to 256 Skia color strings |
 
-### `glow-border`, `energy-border`, `fire-border`
+### `glow-border`, `energy-border`
+
+`fire-border` is the Phase 4 effect described in EFFECTS.md (the Phase 3 shader outline is now `energy-border` with `shader: 'fire'`).
 
 Outlines that follow a target (start them with `fx.attach(id, name, params)` or `engine.attach(node, name, params)`). Every frame they read the target's position, rotation, scale and size and draw a rounded rectangle around it. The line width does not scale with the target. They hide while the target is hidden or out of the scene and complete when it is destroyed, when `duration` passes, or on `cancel()`.
 
@@ -100,7 +115,7 @@ Outlines that follow a target (start them with `fx.attach(id, name, params)` or 
 | `width` | all | `3` (glow), `4` (shader borders) |
 | `duration` | all | runs until cancelled |
 | `color`, `radius`, `pulse`, `intensity` | `glow-border` | `#FFD54A`, `10` pt, `1` per second, `1` |
-| `shader`, `uniforms`, `intensity`, `glowColor` | `energy-border`, `fire-border` | built-in shader; `intensity` maps to `speed` (energy) or `intensity` (fire) |
+| `shader`, `uniforms`, `intensity`, `glowColor` | `energy-border` | `shader`: `'energy'` (default), `'fire'` (the Phase 3 fire look) or a `ShaderDefinition`; `intensity` maps to the shader's speed or intensity uniform |
 
 ## Effect handles
 
@@ -109,10 +124,27 @@ interface EffectHandle {
   readonly id: number;
   readonly effect: string;
   readonly status: 'playing' | 'paused' | 'completed' | 'cancelled';
-  readonly finished: Promise<{ status: 'completed' | 'cancelled'; reason?: 'user' | 'cancelAll' | 'limit' | 'reset' | 'disposed' }>;
+  readonly finished: Promise<{
+    status: 'completed' | 'cancelled';
+    reason?: 'user' | 'cancelAll' | 'limit' | 'reset' | 'disposed' | 'replaced' | 'owner' | 'error';
+  }>;
   pause(): void;  // freezes this effect's time
   resume(): void;
-  cancel(): void; // idempotent
+  cancel(): void; // immediate, idempotent
+  stop(): void;   // graceful: no new content, completes when what is on screen has finished
+  update(params: Record<string, unknown>): void; // runtime parameter change, validated
+  setIntensity(intensity: number): void;         // update({ intensity })
+  readonly updatable: boolean;
+  onEnd(listener: (result) => void): () => void; // once; immediately if already ended
+  zIndex: number;                                // draw order among effects (settable)
+  readonly key: string | undefined;              // replacement key from PlayOptions
+}
+
+interface PlayOptions {
+  seed?: number;     // reproducible randomness for this instance
+  zIndex?: number;   // higher draws on top; negative draws below the scene
+  key?: string;      // starting another effect with this key cancels this one ('replaced')
+  quality?: 'low' | 'medium' | 'high' | QualityProfile;
 }
 ```
 
@@ -364,6 +396,8 @@ clock.advance(1000, { frameMs: 16 });  // deterministic frames
 engine.dispose();
 ```
 
-`Engine` members: `scene`, `assets`, `targets`, `createSprite`, `createSpriteSheet`, `attach`, `play`, `animate`, `keyframes`, `timeline`, `sequence`, `parallel`, `stagger`, `wait`, `run`, `register`, `hasEffect`, `pause`, `resume`, `cancelAll`, `reset`, `dispose`, `now()`, `on('frame' | 'effectStart' | 'effectEnd' | 'playbackStart' | 'playbackEnd')`, `state` (`running`, `paused`, `disposed`), `activeCount`, `playbackCount`, `drawables`. Clocks: `VirtualClock` (manual, for tests) and `FrameClock` (injected `requestFrame`/`cancelFrame`/`now`).
+`Engine` members: `scene`, `assets`, `targets`, `getTarget`, `resolveTarget`, `createSprite`, `createSpriteSheet`, `attach`, `play`, `cue`, `motion.throw`, `quality` (get/set), `reducedMotion` (get/set), `rendererCapabilities`/`setRendererCapabilities`, `camera`, `animate`, `keyframes`, `timeline`, `sequence`, `parallel`, `stagger`, `wait`, `run`, `register`, `hasEffect`, `pause`, `resume`, `cancelAll`, `reset`, `dispose`, `now()`, `on('frame' | 'effectStart' | 'effectEnd' | 'playbackStart' | 'playbackEnd')`, `state` (`running`, `paused`, `disposed`), `activeCount`, `playbackCount`, `drawables`. Clocks: `VirtualClock` (manual, for tests) and `FrameClock` (injected `requestFrame`/`cancelFrame`/`now`).
+
+Sequences without React: `throwAndExplode(engine, target, options)` (same options as `fx.throwAndExplode`) and `new EffectCue(...)` via `engine.cue(...)`.
 
 Note: `lib/` is ESM without file extensions. It works with Metro, Jest/Babel and bundlers, but not with plain Node `import` yet (planned for packaging in Phase 5).

@@ -7,6 +7,12 @@ export interface Rect {
   readonly height: number;
 }
 
+/** One contour of a flattened path: x, y pairs. */
+export interface FlatContour {
+  readonly points: Float64Array;
+  readonly closed: boolean;
+}
+
 type Command =
   | readonly ['M' | 'L', number, number]
   | readonly ['Q', number, number, number, number]
@@ -32,6 +38,7 @@ export class PathData {
   private readonly commands: Command[] = [];
   private svgCache: string | null = null;
   private boundsCache: Rect | null = null;
+  private flatCache: { version: number; segments: number; contours: readonly FlatContour[] } | null = null;
   /** Increments on every change; renderers use it to invalidate cached native paths. */
   version = 0;
 
@@ -123,6 +130,80 @@ export class PathData {
         : { x: 0, y: 0, width: 0, height: 0 };
     }
     return this.boundsCache;
+  }
+
+  /**
+   * Approximates the path with straight segments: one polyline per contour, curves split
+   * into `segments` pieces. Used to emit particles along a path and to measure it. Cached per
+   * `version`.
+   */
+  flatten(segments = 12): readonly FlatContour[] {
+    if (this.flatCache && this.flatCache.version === this.version && this.flatCache.segments === segments) {
+      return this.flatCache.contours;
+    }
+    const contours: FlatContour[] = [];
+    let points: number[] = [];
+    let closed = false;
+    let startX = 0;
+    let startY = 0;
+    let x = 0;
+    let y = 0;
+    const finish = () => {
+      if (points.length >= 4) contours.push({ points: Float64Array.from(points), closed });
+      points = [];
+      closed = false;
+    };
+    for (const c of this.commands) {
+      switch (c[0]) {
+        case 'M':
+          finish();
+          [, x, y] = c;
+          startX = x;
+          startY = y;
+          points.push(x, y);
+          break;
+        case 'L':
+          [, x, y] = c;
+          points.push(x, y);
+          break;
+        case 'Q': {
+          const [, cx, cy, ex, ey] = c;
+          for (let i = 1; i <= segments; i++) {
+            const t = i / segments;
+            const u = 1 - t;
+            points.push(u * u * x + 2 * u * t * cx + t * t * ex, u * u * y + 2 * u * t * cy + t * t * ey);
+          }
+          x = ex;
+          y = ey;
+          break;
+        }
+        case 'C': {
+          const [, c1x, c1y, c2x, c2y, ex, ey] = c;
+          for (let i = 1; i <= segments; i++) {
+            const t = i / segments;
+            const u = 1 - t;
+            points.push(
+              u * u * u * x + 3 * u * u * t * c1x + 3 * u * t * t * c2x + t * t * t * ex,
+              u * u * u * y + 3 * u * u * t * c1y + 3 * u * t * t * c2y + t * t * t * ey,
+            );
+          }
+          x = ex;
+          y = ey;
+          break;
+        }
+        case 'Z':
+          if (x !== startX || y !== startY) points.push(startX, startY);
+          closed = true;
+          x = startX;
+          y = startY;
+          finish();
+          points.push(x, y);
+          break;
+      }
+    }
+    finish();
+    this.flatCache = { version: this.version, segments, contours };
+    return contours;
   }
 
   private ensureStarted(): void {

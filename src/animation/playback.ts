@@ -306,6 +306,11 @@ export class PlaybackImpl implements Playback {
     this.currentStatus = result.status;
     this.generation++;
     this.dispatchTime = null;
+    try {
+      this.root.notifyPlaybackEnd(result);
+    } catch (error) {
+      this.host.reportError(error);
+    }
     this.host.ended(this, result);
     this.resolveFinished(result);
     this.emitter.emit('end', { playback: this, result });

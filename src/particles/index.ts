@@ -1,2 +1,10 @@
 export { isParticleDrawable, MAX_BURST_PARTICLES, ParticleBurst, validateBurstConfig } from './burst';
-export type { BurstConfig, ParticleDrawable } from './burst';
+export type { BurstConfig, ParticleDrawable, ParticleLookKind } from './burst';
+export { DEFAULT_EMITTER_COLORS, MAX_EMITTER_PARTICLES, ParticleEmitter, resolveEmitterConfig } from './emitter';
+export type { EmitterBurst, EmitterConfig, ParticleLook } from './emitter';
+export { createShapeSampler } from './shapes';
+export type { EmitterShape, ShapeSample, ShapeSampler } from './shapes';
+export { ParticleBuffers, ParticlePool, sharedParticlePool } from './pool';
+export type { PoolStats } from './pool';
+export { resolveCurve, resolveSpread } from './curves';
+export type { CurveFunction, Spread, ValueCurve } from './curves';

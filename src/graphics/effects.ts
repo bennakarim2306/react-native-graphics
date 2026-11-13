@@ -15,7 +15,13 @@ export type NodeEffect =
   /** Offset shadow. */
   | { readonly type: 'drop-shadow'; readonly dx: number; readonly dy: number; readonly radius: number; readonly color: Color }
   /** 4x5 row-major color matrix (20 numbers), as in CSS/SVG `feColorMatrix`. */
-  | { readonly type: 'color-matrix'; readonly matrix: readonly number[] };
+  | { readonly type: 'color-matrix'; readonly matrix: readonly number[] }
+  /**
+   * Animated heat-haze distortion: the layer's pixels are displaced by up to `amount` points
+   * along a moving noise field (`frequency` in cycles per point, `speed` multiplies time).
+   * It distorts what the engine draws, not React Native views underneath.
+   */
+  | { readonly type: 'distort'; readonly amount: number; readonly frequency?: number; readonly speed?: number };
 
 export function validateNodeEffect(effect: NodeEffect): void {
   const nonNegative = (v: number, name: string) => {
@@ -33,6 +39,11 @@ export function validateNodeEffect(effect: NodeEffect): void {
     case 'drop-shadow':
       nonNegative(effect.radius, 'radius');
       if (!Number.isFinite(effect.dx) || !Number.isFinite(effect.dy)) throw new InvalidOptionError('drop-shadow offset must be finite.');
+      return;
+    case 'distort':
+      nonNegative(effect.amount, 'amount');
+      if (effect.frequency !== undefined) nonNegative(effect.frequency, 'frequency');
+      if (effect.speed !== undefined && !Number.isFinite(effect.speed)) throw new InvalidOptionError('distort speed must be finite.');
       return;
     case 'color-matrix':
       if (effect.matrix.length !== 20 || effect.matrix.some((v) => !Number.isFinite(v))) {

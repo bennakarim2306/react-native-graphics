@@ -22,7 +22,11 @@ export interface GameFXOverlayProps {
  * measurements are converted to the same space using the overlay's measured window origin.
  *
  * Frames are recorded into a Skia picture on the JS thread and handed to the canvas through a
- * Reanimated shared value, so React does not re-render per frame.
+ * Reanimated shared value, so React does not re-render per frame. Screen-shake offsets of the
+ * `overlay` scope are applied while recording, so they move only what the engine draws.
+ *
+ * On mount it reports the renderer's capabilities to the engine (runtime shaders, node
+ * effects), so effects such as `fire-border` choose a supported path.
  */
 export function GameFXOverlay({ style, testID }: GameFXOverlayProps): ReactNode {
   const engine = useGameFXEngine();
@@ -37,15 +41,22 @@ export function GameFXOverlay({ style, testID }: GameFXOverlayProps): ReactNode 
   const emptyPicture = useMemo(() => renderer.record([]), [renderer]);
   const picture = useSharedValue(emptyPicture);
 
+  const size = useRef({ width: 0, height: 0 });
+
   useEffect(() => {
     if (!engine || engine.state === 'disposed') return undefined;
-    picture.value = renderer.record(engine.drawables);
-    const off = engine.on('frame', ({ drawables }) => {
-      picture.value = renderer.record(drawables);
+    // Effects pick shader or fallback paths from what this renderer supports.
+    engine.setRendererCapabilities({ runtimeShaders: renderer.capabilities.runtimeShaders, nodeEffects: renderer.capabilities.nodeEffects });
+    const record = (drawables: Parameters<typeof renderer.record>[0], camera: { x: number; y: number; rotation: number }) =>
+      renderer.record(drawables, undefined, { ...camera, pivotX: size.current.width / 2, pivotY: size.current.height / 2 });
+    picture.value = record(engine.drawables, engine.camera);
+    const off = engine.on('frame', ({ drawables, camera }) => {
+      picture.value = record(drawables, camera);
     });
     return () => {
       off();
       picture.value = emptyPicture;
+      if (engine.state !== 'disposed') engine.setRendererCapabilities(null);
     };
   }, [engine, renderer, picture, emptyPicture]);
 
@@ -59,8 +70,10 @@ export function GameFXOverlay({ style, testID }: GameFXOverlayProps): ReactNode 
   // Targets are measured in window coordinates; the overlay's own window origin converts them.
   const measureOrigin = useCallback(() => {
     if (!engine || engine.state === 'disposed') return;
-    viewRef.current?.measureInWindow((x, y) => {
+    viewRef.current?.measureInWindow((x, y, width, height) => {
       if (engine.state === 'disposed') return;
+      // Size for the camera pivot (screen-shake rotation turns around the overlay centre).
+      if (Number.isFinite(width) && Number.isFinite(height)) size.current = { width, height };
       engine.targets.setOrigin({ x, y });
       engine.targets.requestRemeasure();
     });

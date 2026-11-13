@@ -6,3 +6,7 @@ export { defineShader, energyShader, fireShader, shaderUniformValues } from './s
 export type { ShaderDefinition, ShaderOptions, ShaderUniform } from './shader';
 export { brightness, grayscale, validateNodeEffect } from './effects';
 export type { NodeEffect } from './effects';
+export { formatColor, mixColor, parseColor, withAlpha } from './color';
+export type { RGBA } from './color';
+export { composeShader, displacementShader, flameBorderShader, SHADER_CHUNKS } from './shaderLib';
+export type { ComposeShaderOptions, ShaderChunk } from './shaderLib';

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { AccessibilityInfo } from 'react-native';
 import { builtInEffects } from '../effects';
+import type { AdaptiveQualityOptions, QualityLevel, QualityProfile } from '../runtime/quality';
 import type { Clock } from '../runtime/clock';
 import type { EffectDefinition } from '../runtime/effect';
 import type { ErrorReporter } from '../runtime/emitter';
@@ -35,6 +37,18 @@ export interface GameFXProviderProps {
   readonly assetManager?: AssetManager;
   /** Image loader override (tests, custom sources). Defaults to the Skia loader. */
   readonly imageLoader?: ImageLoader;
+  /**
+   * Detail level: `low`, `medium` or `high` (default), or a custom profile. Changing the prop
+   * applies to effects started afterwards.
+   */
+  readonly quality?: QualityLevel | QualityProfile;
+  /** Lower the quality automatically when frames are slow, raise it when they are fast. Default off. */
+  readonly adaptiveQuality?: boolean | AdaptiveQualityOptions;
+  /**
+   * Reduced motion: no shakes, smaller flashes, fewer particles. `system` (default) follows the
+   * operating system's "reduce motion" setting; `true`/`false` force it.
+   */
+  readonly reducedMotion?: boolean | 'system';
 }
 
 /**
@@ -42,7 +56,8 @@ export interface GameFXProviderProps {
  * provider mounts and disposed (playbacks and effects cancelled, scene destroyed, frame loop
  * stopped) when it unmounts.
  *
- * Options are read once at mount; changing them later has no effect.
+ * Options are read once at mount; changing them later has no effect, except `quality` and
+ * `reducedMotion`, which apply to effects started after the change.
  */
 export function GameFXProvider({
   children,
@@ -56,6 +71,9 @@ export function GameFXProvider({
   assetBudget,
   assetManager,
   imageLoader,
+  quality,
+  adaptiveQuality,
+  reducedMotion = 'system',
 }: GameFXProviderProps): ReactNode {
   const [engine, setEngine] = useState<Engine | null>(null);
 
@@ -68,6 +86,9 @@ export function GameFXProvider({
       ...(layers !== undefined ? { layers } : {}),
       ...(onError !== undefined ? { onError } : {}),
       assets: assetManager ?? (assetBudget !== undefined ? { maxBytes: assetBudget } : {}),
+      ...(quality !== undefined ? { quality } : {}),
+      ...(adaptiveQuality !== undefined ? { adaptiveQuality } : {}),
+      reducedMotion: reducedMotion === true,
     });
     if (!assetManager) created.assets.setLoader(imageLoader ?? createSkiaImageLoader());
     for (const [id, source] of Object.entries(assets ?? {})) created.assets.register(id, source);
@@ -77,6 +98,31 @@ export function GameFXProvider({
       setEngine((current) => (current === created ? null : current));
     };
   }, []);
+
+  useEffect(() => {
+    if (engine && quality !== undefined && engine.state !== 'disposed') engine.quality = quality;
+  }, [engine, quality]);
+
+  // Reduced motion: forced by the prop, or the system setting (read once, then followed).
+  useEffect(() => {
+    if (!engine || engine.state === 'disposed') return undefined;
+    if (reducedMotion !== 'system') {
+      engine.reducedMotion = reducedMotion;
+      return undefined;
+    }
+    let alive = true;
+    const apply = (enabled: boolean) => {
+      if (alive && engine.state !== 'disposed') engine.reducedMotion = enabled;
+    };
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then(apply)
+      .catch(() => undefined);
+    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', apply);
+    return () => {
+      alive = false;
+      subscription.remove();
+    };
+  }, [engine, reducedMotion]);
 
   return <GameFXContext.Provider value={engine}>{children}</GameFXContext.Provider>;
 }

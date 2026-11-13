@@ -7,7 +7,17 @@ import { KeyframeAnimation, Tween } from '../animation/tween';
 import type { KeyframeOptions, TweenVars } from '../animation/tween';
 import type { AnimationTarget } from '../animation/target';
 import type { Clock } from '../runtime/clock';
-import type { Drawable, EffectDefinition, EffectInstance } from '../runtime/effect';
+import type {
+  Drawable,
+  EffectCapabilities,
+  EffectContext,
+  EffectDefinition,
+  EffectInstance,
+  EffectServices,
+  TransformOffset,
+} from '../runtime/effect';
+import { AdaptiveQuality, resolveQuality } from '../runtime/quality';
+import type { AdaptiveQualityOptions, QualityLevel, QualityProfile } from '../runtime/quality';
 import { Emitter, rethrowAsync } from '../runtime/emitter';
 import type { ErrorReporter, Unsubscribe } from '../runtime/emitter';
 import { DisposedError, InvalidOptionError } from '../runtime/errors';
@@ -19,7 +29,13 @@ import type { SceneOptions } from '../scene/scene';
 import { AssetManager } from '../assets/assets';
 import type { AssetManagerOptions } from '../assets/assets';
 import { TargetRegistry } from '../scene/targets';
-import type { SceneNode } from '../scene/node';
+import { SceneNode } from '../scene/node';
+import { isTargetHandle } from '../scene/targets';
+import type { TargetHandle, TargetRef } from '../scene/targets';
+import { EffectCue } from './cue';
+import type { CueOptions, CueParams } from './cue';
+import { ThrowMotion } from '../motion/throw';
+import type { ThrowOptions, ThrowTarget } from '../motion/throw';
 import { SpriteSheet } from '../sprites/sheet';
 import type { SpriteSheetOptions } from '../sprites/sheet';
 import { Sprite } from '../sprites/sprite';
@@ -30,7 +46,45 @@ export type EffectStatus = 'playing' | 'paused' | 'completed' | 'cancelled';
 export interface EffectResult {
   readonly status: 'completed' | 'cancelled';
   /** Why the effect was cancelled, when it was. */
-  readonly reason?: 'user' | 'cancelAll' | 'limit' | 'reset' | 'disposed';
+  readonly reason?: 'user' | 'cancelAll' | 'limit' | 'reset' | 'disposed' | 'replaced' | 'owner' | 'error';
+}
+
+/** Options of `engine.play` and `engine.attach`. */
+export interface PlayOptions {
+  /** Seed for this instance, for reproducible results. */
+  readonly seed?: number;
+  /**
+   * Draw order among effects (higher on top; equal values keep start order). Effects with a
+   * negative `zIndex` draw below the scene. Default 0.
+   */
+  readonly zIndex?: number;
+  /**
+   * Replacement key: starting an effect with the key of a running one cancels the running one
+   * (reason `replaced`). Use it for "one fire per card" rules.
+   */
+  readonly key?: string;
+  /** Quality for this instance instead of the engine's. */
+  readonly quality?: QualityLevel | QualityProfile;
+}
+
+/** Parameters of an effect that can follow a target. */
+export interface TargetParams {
+  readonly target?: TargetRef;
+}
+
+/** `attach(target, { effect, ...params })`: the effect and its parameters in one object. */
+export interface AttachSpec {
+  readonly effect: string | EffectDefinition<never>;
+  readonly [param: string]: unknown;
+}
+
+function isAttachSpec(value: unknown): value is AttachSpec {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'effect' in value &&
+    typeof (value as { create?: unknown }).create !== 'function'
+  );
 }
 
 /** Handle to one running effect instance. */
@@ -48,18 +102,41 @@ export interface EffectHandle {
   resume(): void;
   /** Stops the effect immediately and releases its resources. Safe to call more than once. */
   cancel(): void;
+  /**
+   * Graceful stop: the effect stops producing new content (emission, loops) and completes once
+   * what is on screen has finished. Effects that cannot stop gracefully are cancelled.
+   */
+  stop(): void;
+  /**
+   * Changes parameters while the effect runs (for example `{ intensity: 1 }`). Throws
+   * `InvalidOptionError` for invalid values or when the effect does not support updates.
+   */
+  update(params: Readonly<Record<string, unknown>>): void;
+  /** Shorthand for `update({ intensity })`. */
+  setIntensity(intensity: number): void;
+  /** True when the effect accepts `update`. */
+  readonly updatable: boolean;
+  /** Calls `listener` once when the effect ends (immediately if it already ended). */
+  onEnd(listener: (result: EffectResult) => void): () => void;
+  /** Draw order among effects. */
+  zIndex: number;
+  /** Replacement key, if any. */
+  readonly key: string | undefined;
 }
 
 export interface FrameEvent {
   /** Engine time of this frame in ms (clock time minus time spent with the engine paused). */
   readonly time: number;
   /**
-   * Everything to draw this frame: the scene first (when it has visible shapes), then effects
-   * in play order (later effects draw on top).
+   * Everything to draw this frame, bottom to top: effects with a negative `zIndex`, the scene
+   * (when it has visible shapes), then the other effects by `zIndex` (equal values keep start
+   * order, so later effects draw on top).
    */
   readonly drawables: readonly Drawable[];
   /** Number of effects after this frame. */
   readonly activeCount: number;
+  /** Offset of the whole overlay (screen shake), to apply when drawing. */
+  readonly camera: { readonly x: number; readonly y: number; readonly rotation: number };
 }
 
 export interface EngineEvents {
@@ -90,6 +167,15 @@ export interface EngineOptions {
    * existing manager between engines (then you dispose it).
    */
   readonly assets?: AssetManager | AssetManagerOptions;
+  /** Detail level for effects. Default `high`. */
+  readonly quality?: QualityLevel | QualityProfile;
+  /**
+   * Lower quality automatically when frames are slow (measured from clock intervals) and raise
+   * it again when they are fast. Default off.
+   */
+  readonly adaptiveQuality?: boolean | AdaptiveQualityOptions;
+  /** Reduced motion: effects skip shakes and large flashes. Default false. */
+  readonly reducedMotion?: boolean;
 }
 
 export type EngineState = 'running' | 'paused' | 'disposed';
@@ -100,23 +186,50 @@ interface ActiveEffect {
   readonly timer: LocalTimer;
 }
 
+interface HandleControl {
+  cancel(handle: EffectHandleImpl): void;
+  pause(handle: EffectHandleImpl): void;
+  resume(handle: EffectHandleImpl): void;
+  stop(handle: EffectHandleImpl): void;
+  update(handle: EffectHandleImpl, params: Readonly<Record<string, unknown>>): void;
+  zIndexChanged(): void;
+}
+
 class EffectHandleImpl implements EffectHandle {
   status: EffectStatus = 'playing';
   readonly finished: Promise<EffectResult>;
-  resolve!: (result: EffectResult) => void;
+  result: EffectResult | null = null;
+  updatable = false;
+  private z: number;
+  private readonly endListeners = new Set<(result: EffectResult) => void>();
+  private resolveFinished!: (result: EffectResult) => void;
 
   constructor(
     readonly id: number,
     readonly effect: string,
-    private readonly control: {
-      cancel(handle: EffectHandleImpl): void;
-      pause(handle: EffectHandleImpl): void;
-      resume(handle: EffectHandleImpl): void;
-    },
+    private readonly control: HandleControl,
+    zIndex: number,
+    readonly key: string | undefined,
+    private readonly reportError: ErrorReporter,
   ) {
+    this.z = zIndex;
     this.finished = new Promise((resolve) => {
-      this.resolve = resolve;
+      this.resolveFinished = resolve;
     });
+  }
+
+  get active(): boolean {
+    return this.status === 'playing' || this.status === 'paused';
+  }
+
+  get zIndex(): number {
+    return this.z;
+  }
+  set zIndex(value: number) {
+    if (!Number.isFinite(value)) throw new InvalidOptionError('zIndex must be a finite number.');
+    if (value === this.z) return;
+    this.z = value;
+    this.control.zIndexChanged();
   }
 
   pause(): void {
@@ -128,7 +241,50 @@ class EffectHandleImpl implements EffectHandle {
   }
 
   cancel(): void {
-    if (this.status === 'playing' || this.status === 'paused') this.control.cancel(this);
+    if (this.active) this.control.cancel(this);
+  }
+
+  stop(): void {
+    if (this.active) this.control.stop(this);
+  }
+
+  update(params: Readonly<Record<string, unknown>>): void {
+    const raw: unknown = params;
+    if (typeof raw !== 'object' || raw === null) throw new InvalidOptionError('update expects an object of parameters.');
+    if (!this.active) return;
+    this.control.update(this, params);
+  }
+
+  setIntensity(intensity: number): void {
+    this.update({ intensity });
+  }
+
+  onEnd(listener: (result: EffectResult) => void): () => void {
+    if (this.result) {
+      try {
+        listener(this.result);
+      } catch (error) {
+        this.reportError(error);
+      }
+      return () => undefined;
+    }
+    this.endListeners.add(listener);
+    return () => this.endListeners.delete(listener);
+  }
+
+  /** @internal */
+  settle(result: EffectResult): void {
+    this.status = result.status;
+    this.result = result;
+    this.resolveFinished(result);
+    for (const listener of [...this.endListeners]) {
+      try {
+        listener(result);
+      } catch (error) {
+        this.reportError(error);
+      }
+    }
+    this.endListeners.clear();
   }
 }
 
@@ -162,6 +318,13 @@ export class Engine implements PlayableRunner {
   private readonly clock: Clock;
   private readonly random: Random;
   private readonly definitions = new Map<string, EffectDefinition<never>>();
+  private qualityProfile: QualityProfile;
+  private adaptive: AdaptiveQuality | null;
+  private lastFrameClock: number | null = null;
+  private reduced: boolean;
+  private capabilitiesValue: EffectCapabilities | null = null;
+  private readonly cameraOffsets = new Set<TransformOffset & { removed: boolean }>();
+  private readonly services: EffectServices;
   private readonly active: ActiveEffect[] = [];
   private readonly playbacks: PlaybackImpl[] = [];
   private readonly running = new Map<object, RunningAnimation[]>();
@@ -216,7 +379,118 @@ export class Engine implements PlayableRunner {
         this.onPlaybackEnded(playback, result);
       },
     };
+    this.qualityProfile = resolveQuality(options.quality ?? 'high');
+    const adaptive = options.adaptiveQuality;
+    this.adaptive = adaptive
+      ? new AdaptiveQuality(this.qualityProfile.level, typeof adaptive === 'object' ? adaptive : {})
+      : null;
+    this.reduced = options.reducedMotion ?? false;
+    const capabilities = () => this.capabilitiesValue;
+    this.services = {
+      resolveTarget: (target) => this.resolveTarget(target),
+      addCameraOffset: () => this.addCameraOffset(),
+      addTargetOffset: (target) => {
+        const id = typeof target === 'string' ? target : this.targets.idOf(target);
+        return id === undefined ? null : this.targets.addOffset(id);
+      },
+      get capabilities() {
+        return capabilities();
+      },
+    };
     for (const definition of options.effects ?? []) this.register(definition);
+  }
+
+  // --- Quality, accessibility and renderer ------------------------------------------------
+
+  /** Detail level used by effects started from now on. */
+  get quality(): QualityProfile {
+    return this.qualityProfile;
+  }
+  set quality(value: QualityLevel | QualityProfile) {
+    this.qualityProfile = resolveQuality(value);
+  }
+
+  /** True when the user asked for reduced motion; effects skip shakes and large flashes. */
+  get reducedMotion(): boolean {
+    return this.reduced;
+  }
+  set reducedMotion(value: boolean) {
+    this.reduced = value;
+  }
+
+  /** What the active renderer supports; set by the overlay. */
+  get rendererCapabilities(): EffectCapabilities | null {
+    return this.capabilitiesValue;
+  }
+  setRendererCapabilities(capabilities: EffectCapabilities | null): void {
+    this.capabilitiesValue = capabilities;
+  }
+
+  /** Current overlay offset from screen-shake effects. */
+  get camera(): { x: number; y: number; rotation: number } {
+    let x = 0;
+    let y = 0;
+    let rotation = 0;
+    for (const offset of this.cameraOffsets) {
+      x += offset.x;
+      y += offset.y;
+      rotation += offset.rotation;
+    }
+    return { x, y, rotation };
+  }
+
+  /** A host target by id: its proxy node and its transform binding (`motion`). */
+  getTarget(id: string): TargetHandle | undefined {
+    return this.targets.get(id);
+  }
+
+  /**
+   * Resolves a target id, target handle or node to a node. Throws `InvalidOptionError` for
+   * unknown ids or destroyed nodes.
+   */
+  resolveTarget(target: TargetRef): SceneNode {
+    if (isTargetHandle(target)) target = target.node;
+    if (target instanceof SceneNode) {
+      if (target.destroyed) throw new InvalidOptionError('The target node has been destroyed.');
+      return target;
+    }
+    if (typeof target !== 'string') throw new InvalidOptionError('A target must be a scene node, a target id or a target handle.');
+    const node = this.targets.node(target);
+    if (!node) throw new InvalidOptionError(`Unknown target "${target}". Mount <GameFXTarget id="${target}"> first.`);
+    return node;
+  }
+
+  private addCameraOffset(): TransformOffset {
+    const values = { x: 0, y: 0, rotation: 0 };
+    const offset = {
+      removed: false,
+      get x() {
+        return values.x;
+      },
+      set x(v: number) {
+        values.x = v;
+      },
+      get y() {
+        return values.y;
+      },
+      set y(v: number) {
+        values.y = v;
+      },
+      get rotation() {
+        return values.rotation;
+      },
+      set rotation(v: number) {
+        values.rotation = v;
+      },
+      remove: () => {
+        if (offset.removed) return;
+        offset.removed = true;
+        this.cameraOffsets.delete(offset);
+        this.scene.markDirty();
+      },
+    };
+    this.cameraOffsets.add(offset);
+    return offset;
   }
 
   get state(): EngineState {
@@ -266,7 +540,7 @@ export class Engine implements PlayableRunner {
    * Starts an effect, either by registered name or by passing its definition directly.
    * Throws `InvalidOptionError` synchronously for unknown effects or invalid parameters.
    */
-  play<Params>(effect: EffectDefinition<Params> | string, params: Params, options: { seed?: number } = {}): EffectHandle {
+  play<Params>(effect: EffectDefinition<Params> | string, params: Params, options: PlayOptions = {}): EffectHandle {
     this.assertAlive();
     const definition = typeof effect === 'string' ? this.definitions.get(effect) : effect;
     if (!definition) {
@@ -275,28 +549,53 @@ export class Engine implements PlayableRunner {
     if (options.seed !== undefined && !Number.isFinite(options.seed)) {
       throw new InvalidOptionError(`seed must be a finite number, got ${String(options.seed)}.`);
     }
+    const zIndex = options.zIndex ?? 0;
+    if (!Number.isFinite(zIndex)) throw new InvalidOptionError('zIndex must be a finite number.');
+    if (options.key !== undefined && (typeof options.key !== 'string' || options.key.length === 0)) {
+      throw new InvalidOptionError('key must be a non-empty string.');
+    }
+    // A `target` given as a host target id or handle resolves to its proxy node.
+    let resolved = params;
+    if (typeof params === 'object' && params !== null) {
+      const target = (params as { target?: unknown }).target;
+      if (typeof target === 'string' || isTargetHandle(target)) resolved = { ...params, target: this.resolveTarget(target) };
+    }
     const random = createRandom(options.seed ?? this.random.nextUint32());
-    const instance = (definition as EffectDefinition<Params>).create(params, { random });
+    const context: EffectContext = {
+      random,
+      quality: options.quality !== undefined ? resolveQuality(options.quality) : this.qualityProfile,
+      reducedMotion: this.reduced,
+      services: this.services,
+    };
+    const instance = (definition as EffectDefinition<Params>).create(resolved, context);
 
-    const handle = new EffectHandleImpl(this.nextId++, definition.name, {
-      cancel: (h) => {
-        this.endEffect(h, { status: 'cancelled', reason: 'user' });
-      },
-      pause: (h) => {
-        const entry = this.findEffect(h);
-        entry?.timer.pause(this.now());
-        h.status = 'paused';
-        this.updateSubscription();
-      },
-      resume: (h) => {
-        const entry = this.findEffect(h);
-        entry?.timer.resume(this.now());
-        h.status = 'playing';
-        this.updateSubscription();
-      },
-    });
-    instance.update(0);
+    if (options.key !== undefined) {
+      for (const entry of [...this.active]) {
+        if (entry.handle.key === options.key) this.endEffect(entry.handle, { status: 'cancelled', reason: 'replaced' });
+      }
+    }
+
+    const handle = new EffectHandleImpl(
+      this.nextId++,
+      definition.name,
+      this.handleControl,
+      zIndex,
+      options.key,
+      this.reportError,
+    );
+    handle.updatable = typeof instance.setParams === 'function';
+    try {
+      instance.update(0);
+    } catch (error) {
+      try {
+        instance.dispose();
+      } catch (disposeError) {
+        this.reportError(disposeError);
+      }
+      throw error;
+    }
     this.active.push({ handle, instance, timer: new LocalTimer(this.now()) });
+    this.sortEffects();
     this.emitter.emit('effectStart', { handle });
 
     while (this.active.length > this.maxActive) {
@@ -309,24 +608,69 @@ export class Engine implements PlayableRunner {
   }
 
   /**
-   * Starts an effect that follows a target: a scene node, or the id of a registered host view
-   * target (`<GameFXTarget id>`). The effect receives the node as its `target` parameter.
+   * Starts an effect that follows a target: a scene node, the id of a registered host view
+   * target (`<GameFXTarget id>`) or its handle (`getTarget(id)`). The effect receives the node
+   * as its `target` parameter.
+   * Two forms: `attach(target, 'fire-border', { intensity: 1 })` and
+   * `attach(target, { effect: 'fire-border', intensity: 1 })`.
    * Throws `InvalidOptionError` for unknown target ids.
    */
-  attach<Params extends { readonly target: SceneNode }>(
-    target: string | SceneNode,
+  attach<Params extends TargetParams>(
+    target: TargetRef,
     effect: EffectDefinition<Params> | string,
-    params: Omit<Params, 'target'>,
-    options: { seed?: number } = {},
+    params?: Omit<Params, 'target'>,
+    options?: PlayOptions,
+  ): EffectHandle;
+  attach(target: TargetRef, spec: AttachSpec, options?: PlayOptions): EffectHandle;
+  attach(
+    target: TargetRef,
+    effectOrSpec: EffectDefinition<TargetParams> | string | AttachSpec,
+    paramsOrOptions?: object,
+    maybeOptions?: PlayOptions,
   ): EffectHandle {
     this.assertAlive();
-    let node = typeof target === 'string' ? undefined : target;
-    if (typeof target === 'string') {
-      node = this.targets.node(target);
-      if (!node) throw new InvalidOptionError(`Unknown target "${target}". Mount <GameFXTarget id="${target}"> first.`);
+    const node = this.resolveTarget(target);
+    if (isAttachSpec(effectOrSpec)) {
+      const { effect, ...params } = effectOrSpec;
+      return this.play(effect, { ...params, target: node }, (paramsOrOptions ?? {}));
     }
-    return this.play(effect, { ...params, target: node } as Params, options);
+    return this.play(effectOrSpec, { ...(paramsOrOptions ?? {}), target: node }, maybeOptions ?? {});
   }
+
+  /**
+   * A timeline item that starts an effect when playback reaches it. `params` can be a function
+   * evaluated at that moment (for example to read the impact position). Effects started by a
+   * cue are cancelled when the playback is cancelled or stopped, unless `detached` is set.
+   */
+  cue<Params>(effect: EffectDefinition<Params> | string, params: CueParams<Params>, options: CueOptions = {}): EffectCue<Params> {
+    this.assertAlive();
+    if (typeof effect === 'string' && !this.definitions.has(effect)) {
+      throw new InvalidOptionError(`Unknown effect "${effect}". Register it before using it in a cue.`);
+    }
+    return this.bind(new EffectCue(this, effect, params, options));
+  }
+
+  /** Motion helpers that build timeline items. */
+  readonly motion = {
+    /**
+     * Ballistic throw of a scene node or host target (`id`): launched upwards, rotating, then
+     * falling under constant gravity to a landing point. Markers: `launch`, `peak`, `impact`.
+     */
+    throw: (target: TargetRef | ThrowTarget, options: ThrowOptions): ThrowMotion => {
+      this.assertAlive();
+      let animated: ThrowTarget;
+      if (isTargetHandle(target)) {
+        animated = target.motion;
+      } else if (typeof target === 'string') {
+        const motion = this.targets.motion(target);
+        if (!motion) throw new InvalidOptionError(`Unknown target "${target}". Mount <GameFXTarget id="${target}"> first.`);
+        animated = motion;
+      } else {
+        animated = target;
+      }
+      return this.bind(new ThrowMotion(animated, options));
+    },
+  };
 
   // --- Animations -------------------------------------------------------------------------
 
@@ -474,6 +818,7 @@ export class Engine implements PlayableRunner {
     for (const entry of [...this.active]) {
       this.endEffect(entry.handle, { status: 'cancelled', reason: 'disposed' });
     }
+    this.cameraOffsets.clear();
     this.scene.dispose('engineDisposed');
     this.targets.dispose();
     if (this.ownsAssets) this.assets.dispose();
@@ -490,6 +835,12 @@ export class Engine implements PlayableRunner {
   private readonly onFrame = (): void => {
     if (this.currentState === 'disposed') return;
     const time = this.now();
+    const clockNow = this.clock.now();
+    if (this.adaptive && this.lastFrameClock !== null && this.currentState === 'running') {
+      const level = this.adaptive.sample(clockNow - this.lastFrameClock);
+      if (level) this.qualityProfile = resolveQuality(level);
+    }
+    this.lastFrameClock = clockNow;
     this.inFrame = true;
     if (this.currentState === 'running') {
       for (const playback of [...this.playbacks]) {
@@ -506,7 +857,7 @@ export class Engine implements PlayableRunner {
           entry.instance.update(Math.max(0, entry.timer.local(time)));
         } catch (error) {
           this.reportError(error);
-          this.endEffect(entry.handle, { status: 'cancelled', reason: 'user' });
+          this.endEffect(entry.handle, { status: 'cancelled', reason: 'error' });
           continue;
         }
         if (entry.instance.done) this.endEffect(entry.handle, { status: 'completed' });
@@ -521,12 +872,74 @@ export class Engine implements PlayableRunner {
   private publish(time: number): void {
     const drawables: Drawable[] = [];
     const sceneDrawable = this.scene.drawable(time);
+    // Effects are sorted by zIndex; negative ones draw below the scene.
+    let i = 0;
+    for (; i < this.active.length && (this.active[i]?.handle.zIndex ?? 0) < 0; i++) {
+      drawables.push(...(this.active[i]?.instance.drawables ?? []));
+    }
     if (sceneDrawable.commands.length > 0) drawables.push(sceneDrawable);
-    for (const entry of this.active) drawables.push(...entry.instance.drawables);
+    for (; i < this.active.length; i++) drawables.push(...(this.active[i]?.instance.drawables ?? []));
     this.scene.markClean();
     this.lastDrawables = drawables;
-    this.emitter.emit('frame', { time, drawables, activeCount: this.active.length });
+    this.emitter.emit('frame', { time, drawables, activeCount: this.active.length, camera: this.camera });
   }
+
+  private sortEffects(): void {
+    // Stable: equal zIndex keeps start order.
+    this.active.sort((a, b) => a.handle.zIndex - b.handle.zIndex || a.handle.id - b.handle.id);
+  }
+
+  private readonly handleControl: HandleControl = {
+    cancel: (h) => {
+      this.endEffect(h, { status: 'cancelled', reason: 'user' });
+    },
+    pause: (h) => {
+      const entry = this.findEffect(h);
+      entry?.timer.pause(this.now());
+      h.status = 'paused';
+      this.updateSubscription();
+    },
+    resume: (h) => {
+      const entry = this.findEffect(h);
+      entry?.timer.resume(this.now());
+      h.status = 'playing';
+      this.updateSubscription();
+    },
+    stop: (h) => {
+      const entry = this.findEffect(h);
+      if (!entry) return;
+      if (typeof entry.instance.stop !== 'function') {
+        this.endEffect(h, { status: 'cancelled', reason: 'user' });
+        return;
+      }
+      try {
+        entry.instance.stop();
+      } catch (error) {
+        this.reportError(error);
+        this.endEffect(h, { status: 'cancelled', reason: 'error' });
+        return;
+      }
+      if (h.status === 'paused') {
+        entry.timer.resume(this.now());
+        h.status = 'playing';
+      }
+      if (entry.instance.done && !this.inFrame) this.endEffect(h, { status: 'completed' });
+      this.updateSubscription();
+    },
+    update: (h, params) => {
+      const entry = this.findEffect(h);
+      if (!entry) return;
+      if (typeof entry.instance.setParams !== 'function') {
+        throw new InvalidOptionError(`Effect "${h.effect}" does not support parameter updates.`);
+      }
+      entry.instance.setParams(params);
+      this.scene.markDirty();
+    },
+    zIndexChanged: () => {
+      this.sortEffects();
+      this.scene.markDirty();
+    },
+  };
 
   private get needsFrames(): boolean {
     if (this.currentState === 'disposed') return false;
@@ -560,7 +973,7 @@ export class Engine implements PlayableRunner {
     } catch (error) {
       this.reportError(error);
     }
-    handle.resolve(result);
+    handle.settle(result);
     this.emitter.emit('effectEnd', { handle, result });
     if (this.active.length === 0 && this.currentState !== 'disposed' && !this.inFrame) {
       // Publish a frame right away so renderers clear, then go idle.
@@ -618,6 +1031,7 @@ export class Engine implements PlayableRunner {
   private unsubscribe(): void {
     this.unsubscribeClock?.();
     this.unsubscribeClock = null;
+    this.lastFrameClock = null;
   }
 
   private assertAlive(): void {

@@ -5,14 +5,125 @@
 | 0. Repository audit and migration | **Done** (2026-11-11, merged in PR #1) |
 | 1. Working engine prototype (particle burst) | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not yet verified. See below |
 | 2. Runtime, scene graph and animation orchestration | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not verified. See below |
-| 3. Graphics engine, sprites, assets, RN anchoring | **Implemented, awaiting device check** (2026-11-12). Tests, bundles and web build pass; not yet run on Android or iOS. See below |
-| 4 to 6 | Not started |
+| 3. Graphics engine, sprites, assets, RN anchoring | **Done on Android** (implemented 2026-11-12; verified by the owner on the Android 17 emulator, Expo Go, 2026-11-13). iOS not verified |
+| 4. Advanced effects, particles, shaders, composable FX | **Implemented, awaiting device check** (2026-11-13). Tests, bundles and web build pass; not yet run on Android or iOS. See below |
+| 5 and 6 | Not started (Phase 5 needs the owner's approval) |
+
+## Phase 4: Advanced visual effects, particle systems and composable game FX (2026-11-13)
+
+### Status
+
+**Implemented and tested in the container; not yet verified on a device.** Each acceptance criterion below is backed by automated tests that were run, by Android and iOS bundles that built, and by genuine screenshots of the web build (Skia through CanvasKit/WebGL in headless Chromium). **No Phase 4 code has run on an Android emulator, a physical device or iOS yet**, and no device performance numbers exist. The owner's Android 17 emulator check (Effects tab, demos A to F) is the remaining step, as for Phases 1 to 3.
+
+Baseline (step 1): CLAUDE.md, PROGRESS.md and the architecture docs were read; Phase 3 was intact (21 suites, 246 tests passing); versions unchanged (Expo SDK 58, React Native 0.88.1, Skia 2.14.0, Reanimated 4.7.1, Worklets 0.13). Reused without redesign: clock and `LocalTimer`, playbacks, timelines and markers, scene graph and display list, attachments, targets, graphics model, renderer, assets, sprites. Gaps closed: no continuous emitters (only one-shot bursts), no runtime parameter updates or graceful stop on handles, no way to start effects from timelines, no way to move a real React Native view, no quality or reduced-motion handling, no camera.
+
+| # | Acceptance criterion | Evidence |
+| --- | --- | --- |
+| 1 | Reusable, composable effects system | Effect contract with `stop`/`setParams`, handles with `stop`, `update`, `setIntensity`, `onEnd`, `zIndex`, `key`; primitives, presets, `defineComposite`, cues on timelines (`src/runtime/effect.ts`, `src/engine/engine.ts`, `src/effects/*`, `src/engine/cue.ts`). `runtime.test.ts`, `presets.test.ts` (composites), `sequences.test.ts` |
+| 2 | Configurable emitters with lifecycle | `ParticleEmitter` (`src/particles/emitter.ts`): point, line, circle, rect and path shapes, all particle properties of the brief, curves over life, world and local space, rate and bursts, `maxParticles`, pooled buffers, seeded. 25 tests in `emitter.test.ts`; pixel tests for every look |
+| 3 | Shader infrastructure implemented and demonstrated | `SHADER_CHUNKS` + `composeShader` (noise, fbm, warp, distance functions, ramps), `flameBorderShader`, `displacementShader`, `distort` node effect, central compile cache, uniform validation, capability fallback. `shaderLib.test.ts`; CanvasKit pixel tests (fire pixels, animation, one compile for many nodes, distortion); demo A |
+| 4 | Fire border on an existing React Native target | `fire-border` (`src/effects/fireBorder.ts`) attached to a plain `View` in `GameFXTarget`: `phase4.test.tsx` (attach spec on an ordinary view), demo A screenshots |
+| 5 | Fire aligned during supported transformations | Explicit transform binding (`TargetMotion`, `GameFXTarget` as `Animated.View`): the same numbers move the view and the proxy node. `targets.test.ts`, `phase4.test.tsx` (view style and proxy node checked together), `fireBorder.test.ts` (position, rotation, scale), screenshots a3 to a5 (rotated, scaled, moved) and at 360 × 740 @3× and 1024 × 768 @1× |
+| 6 | Explosion composed from reusable primitives | `explosion` = `defineComposite` of `flash`, `shockwave`, `particles` (sparks, embers, smoke, debris) and `screen-shake`; quality drops secondary layers. `presets.test.ts`, pixel test, demo D |
+| 7 | Throw & Explode as a synchronized sequence | `ThrowMotion` (analytical ballistic, markers) + cues at the impact time on one timeline (`src/engine/sequences.ts`); no JavaScript timers. `throw.test.ts`, `sequences.test.ts` (impact point, cancel at every stage, replay after cancel, unmount), `stress.test.ts`, `phase4.test.tsx` (on a real view), screenshots b1 to b10 |
+| 8 | Cancellation and cleanup | `cancel`, `stop`, keys, owner cancellation, target unmount, dispose; stress tests end idle with no attachments, playbacks or camera offset left |
+| 9 | Multiple simultaneous effects | Rules in EFFECTS.md §6; `runtime.test.ts` (order, keys, limit), stress tests (100 explosions, 1000 effects, 200 in one frame, 12 emitters for a minute), demo E |
+| 10 | Showcase demonstrates the real SDK | **Effects** tab (`example/EffectsDemo.tsx`, `example/PerfDemo.tsx`), public imports only, demos A to E as specified plus F (performance scenarios). Type-checks against the installed tarball; bundles for Android, iOS and web; 31 screenshots |
+| 11 | Automated tests pass | **32 suites, 399 tests, 0 failures** |
+| 12 | TypeScript and relevant builds pass | Table below |
+| 13 | Earlier phases still work | All 246 Phase 1 to 3 tests still pass (two adjusted for the renamed fire outline, see API changes); Particles, Motion and Graphics tabs unchanged and bundled |
+| 14 | Documentation reflects the implementation | New `docs/EFFECTS.md` (effects API, particles, shaders, composition, RN targets, quality) and `docs/TESTING.md`; `API.md`, `ARCHITECTURE.md`, `PERFORMANCE.md`, `README.md`, this file updated |
+
+### What was built
+
+- **Effects runtime:** graceful `stop()` (no new content, completes when what is on screen is done), validated runtime `update()`/`setIntensity()`, `onEnd`, `zIndex` (negative draws below the scene), replacement `key`s, per-instance `quality`, error isolation (reason `error`), cancellation reasons `replaced` and `owner`.
+- **Particles:** `ParticleEmitter` with emitter shapes, direction modes (`fixed`, `normal`, `radial`), gravity vectors, drag, angular velocity, velocity alignment, curves, palettes and colors over life, looks (`circle`, `square`, `spark`, `ring`, `soft`, sprite-sheet `image` particles drawn with `drawAtlas`), world/local space with interpolated births and inherited velocity, a capacity-keyed buffer pool.
+- **Shaders:** chunk library and composer; flame border and displacement shaders; `distort` node effect; uniform value-count validation; renderer capabilities passed to effects.
+- **Effects (15 built in):** `fire-border` (new), `explosion`, `confetti`, `golden-sparks`, `smoke`, `trail`, `glow-pulse`, `shockwave`, `flash`, `screen-shake`, `victory`, `particles`; earlier `particle-burst`, `glow-border`, `energy-border`.
+- **Composition:** `EffectCue`, `fx.timeline`, `fx.cue`, `fx.throw` (`ThrowMotion`), `throwAndExplode` / `fx.throwAndExplode`, `fx.animate`, `fx.getTarget`, target handles accepted wherever a target is.
+- **React Native:** transform binding of real views (`GameFXTarget` is an `Animated.View`), deferred measurement while transformed, camera shake applied by the overlay, provider props `quality`, `adaptiveQuality`, `reducedMotion` (system setting by default), renderer capabilities reported by the overlay.
+- **Showcase:** Effects tab with A (fire border: on/off, intensity, flame height, color, move, rotate, scale), B (Throw & Explode, replay, cancel, return/vanish), C (particle playground: count, speed, gravity, lifetime, direction, size, palette, look, burst or fountain), D (gallery of all presets), E (combined effects on three targets: fire on all, glow + sparks, explosions in sequence, spin, victory, clear), F (the seven benchmark scenarios with a live frame meter). A quality chip bar and an active-effect counter on top.
+- **Tooling:** `scripts/effects.bench.ts` (seven scenarios in Node), `scripts/capture-effects-showcase.js` (reproducible web screenshots).
+
+### Verification (commands run in the Linux cloud container, Node 22.23.4, npm 10.9.9)
+
+| Command | Result |
+| --- | --- |
+| `npm run typecheck` | Pass |
+| `npm run lint` | Pass (boundary rule now also covers `src/motion`) |
+| `npm test -- --ci` | **Pass: 32 suites, 399 tests, 0 failed** (246 from earlier phases, 153 new). CanvasKit prints one `RuntimeEffect error ... unknown identifier 'nope'`: the intentional broken-shader test |
+| `npx jest --coverage --ci` | All files: 92.7 % statements, 84.4 % branches, 93.9 % functions, 95.4 % lines |
+| `npm run build` | Pass |
+| `npm run bench` | Pass; results in `PERFORMANCE.md` (Node, not a device) |
+| `npm run example:install` | Pass |
+| `cd example && npx tsc --noEmit` | Pass |
+| `cd example && CI=1 EXPO_OFFLINE=1 npx expo export --platform android` | Pass (Hermes bundle) |
+| `cd example && CI=1 EXPO_OFFLINE=1 npx expo export --platform ios` | Pass (Hermes bundle) |
+| `cd example && CI=1 EXPO_OFFLINE=1 npx expo export --platform web`, served locally, `node scripts/capture-effects-showcase.js` (Playwright, Chromium) | Pass, no page errors, active-effect counter back to 0 at the end. 27 screenshots of demos A to E at 412 × 915 @2×, 4 at other sizes and densities; section F exercised (all scenarios start, report and clean up) |
+
+Screenshots (real CanvasKit/WebGL rendering in headless Chromium, **not** a device) are in the project files under `phase4/screenshots/`.
+
+Defect found and fixed during visual checks: pressing Replay right after Cancel in `vanish` mode left the card half transparent, because the cancelled sequence restored opacity in a promise callback, after the new sequence had captured the faded value. The restore is now synchronous; a regression test cancels and replays in every phase.
+
+**Not verified:** any Phase 4 behaviour on an Android emulator or device or on iOS; release builds; device frame times, memory and GPU load (the procedure is in `PERFORMANCE.md`); how the shader flames look on a phone GPU (web WebGL and CanvasKit CPU raster only); `reducedMotion: 'system'` with a real OS setting (tested with a mocked `AccessibilityInfo`).
+
+### Changed files
+
+New:
+- `src/particles/{emitter,shapes,curves,pool}.ts` (+ `emitter.test.ts`)
+- `src/effects/{primitives,presets,composite,placement,fireBorder}.ts` (+ `presets.test.ts`, `fireBorder.test.ts`)
+- `src/graphics/{shaderLib,color}.ts` (+ `shaderLib.test.ts`)
+- `src/motion/{throw,index}.ts` (+ `throw.test.ts`)
+- `src/engine/{cue,sequences}.ts` (+ `runtime.test.ts`, `sequences.test.ts`, `stress.test.ts`)
+- `src/runtime/quality.ts`, `src/scene/targets.test.ts`, `src/renderer/skia/effects.render.test.ts`, `src/react-native/phase4.test.tsx`
+- `example/{EffectsDemo,PerfDemo,ui}.tsx`
+- `scripts/{effects.bench.ts,capture-effects-showcase.js}`, `docs/{EFFECTS,TESTING}.md`
+
+Changed:
+- `src/runtime/{effect,index}.ts`, `src/animation/{playable,playback,timeline}.ts` (end-of-playback notification for cues and throws)
+- `src/scene/{targets,index}.ts`, `src/graphics/{paint,path,effects,index}.ts`, `src/particles/{burst,index}.ts`
+- `src/effects/{border,index}.ts` (+ `border.test.ts`), `src/engine/{engine,index}.ts`, `src/core.ts`, `src/index.ts` (+ `index.test.ts`)
+- `src/renderer/skia/SkiaEffectsRenderer.ts`
+- `src/react-native/{GameFXOverlay,GameFXProvider,GameFXTarget}.tsx`, `src/react-native/{useGameFX,index}.ts`
+- `example/{App.tsx,package-lock.json}`, `jest.config.js`, `jest.setup.rn.js`, `eslint.config.mjs`, `package.json`
+- `README.md`, `docs/{API,ARCHITECTURE,PROGRESS,PERFORMANCE}.md`
+
+### API changes from Phase 3
+
+Additive except where noted.
+- **Breaking:** `fire-border` is now the Phase 4 flame effect (`FireBorderParams`: `intensity`, `flameHeight`, `color`, `glow`, `sparks`, `shape`, `mode`…). The Phase 3 shader outline is `energy-border` with `shader: 'fire'`.
+- **Behaviour change:** `<GameFXTarget>` renders a Reanimated `Animated.View` (so the engine can move it). Its layout and touches are unchanged; Reanimated was already a peer dependency.
+- `EffectHandle`: `stop`, `update`, `setIntensity`, `updatable`, `onEnd`, `zIndex`, `key`; new cancellation reasons `replaced`, `owner`, `error`. `PlayOptions`: `zIndex`, `key`, `quality` (React Native's own `PlayOptions` type is now the engine's).
+- `attach(target, { effect, ...params })` spec form; `TargetRef` (id, handle or node) everywhere a target is accepted.
+- Hook: `getTarget`, `animate`, `timeline`, `cue`, `throw`, `throwAndExplode`, `quality`, `setQuality`, `reducedMotion`. Provider: `quality`, `adaptiveQuality`, `reducedMotion`.
+- Engine: `cue`, `motion.throw`, `getTarget`, `resolveTarget`, `quality`, `reducedMotion`, `camera`, `setRendererCapabilities`; option `adaptiveQuality`. `FrameEvent.camera`. Frame drawables are ordered by `zIndex`.
+- Exports: emitter, shapes, curves, pool, primitives, presets, composites, `Placement`, shader library, colors, `ThrowMotion`, `throwAndExplode`, `EffectCue`, `TargetMotion`, `isTargetHandle`, quality types.
+
+### Known limitations
+
+- **Device coverage:** not run on Android or iOS yet; no device performance data. See "Not verified".
+- **Views are not textures:** effects are drawn around React Native views, not into their pixels (no dissolve or distortion of a view).
+- **Transform binding is explicit:** only transforms made through `motion` (or `fx.animate`, timelines, throws) are followed; transforms the app applies by other means are not.
+- **JS thread:** simulation and picture recording run on the JavaScript thread. A busy JS thread delays effect frames (the app UI stays responsive).
+- **Draw calls:** vector particles are drawn one Skia call per particle; up to ~1100 per frame in the five-explosion scenario. Unmeasured on devices; batching is the first optimization if needed.
+- **Low quality fire:** replaces the shader with CPU particles; cheaper for the GPU, about 6× more JS time in Node. Needs a device measurement to decide.
+- **Reduced motion** does not change motions the app starts itself (throws, tweens); `fx.reducedMotion` lets the app decide.
+- **Optional presets** of the brief (lightning, energy aura, magic particles, fire trails, ice, dissolve) were not built; heat distortion exists as the `heatHaze` option and `distort` node effect.
+
+### Remaining defects
+
+None known. One defect was found and fixed during the visual checks (Replay after Cancel, see above).
+
+### Next step
+
+1. The owner runs the Effects tab on the Android 17 emulator (steps in the final report and `README.md`), including section F to record the first device numbers.
+2. Phase 5 starts only after the owner approves it.
 
 ## Phase 3: Graphics engine, sprites, assets and React Native anchoring (2026-11-12)
 
 ### Status
 
-**Implemented and tested in the container; not yet verified on a device.** Every acceptance criterion below is backed by automated tests that were run, by Android and iOS bundles that built, and by genuine screenshots of the web build (Skia through CanvasKit in Chromium). **No Phase 3 code has run on an Android emulator, a physical device or iOS yet.** The owner's Android 17 emulator check is the remaining step before Phase 3 can be called done on Android, as with Phases 1 and 2.
+**Done on Android.** Verified by the owner on the Android 17 emulator in Expo Go on 2026-11-13 (all Graphics tab demos). iOS not verified. At implementation time every acceptance criterion below was backed by automated tests that were run, by Android and iOS bundles that built, and by genuine screenshots of the web build (Skia through CanvasKit in Chromium).
 
 Step 1 (baseline): CLAUDE.md and PROGRESS.md were read, Phase 2 was intact (160 tests passing), installed versions are unchanged (Expo SDK 58, RN 0.88.1, Skia 2.14.0, Reanimated 4.7.1, Worklets 0.13). Phase 2 gaps that Phase 3 needed and closed: no images or paths in the scene, no group compositing (opacity per shape only), no built-in attachment effect, no view measurement. No working component was replaced; the Skia renderer was rewritten internally because it only knew rects and circles, and its public surface (`createSkiaEffectsRenderer`, capabilities) was kept.
 
@@ -143,7 +254,7 @@ All additive except where noted.
 - **Same-time markers and endless-loop jumps:** unchanged from Phase 2.
 - **Device coverage:** Phase 3 has not run on Android or iOS; see "Not verified".
 
-### Phase 4 direction (not started)
+### Phase 4 direction (as planned at the end of Phase 3; Phase 4 is now implemented, see above)
 
 Phase 4 per CLAUDE.md is the general-purpose FX library. Recommended order, building on what exists:
 1. Emitters that follow nodes and targets (continuous particles as attachments), with texture particles drawn from sprite sheets. This gives trails, smoke and sparks.
