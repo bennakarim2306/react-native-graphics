@@ -7,6 +7,11 @@ import { useEffect, useState } from 'react';
 import type { GestureResponderEvent } from 'react-native';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { GameFXOverlay, GameFXProvider, SDK_VERSION, useGameFX, useGameFXEngine } from 'react-native-graphics';
+import { EffectsDemo } from './EffectsDemo';
+import { DEMO_ASSETS, GraphicsDemo } from './GraphicsDemo';
+import { MotionDemo } from './MotionDemo';
+
+type Tab = 'fx' | 'particles' | 'motion' | 'graphics';
 
 const PALETTES: Record<string, readonly string[]> = {
   Gold: ['#FFD54A', '#FFB300', '#FF7043', '#FFF3C4'],
@@ -37,10 +42,10 @@ function Showcase() {
   const fx = useGameFX();
   const [taps, setTaps] = useState(0);
 
-  // Overlay is mounted at the window origin, so page coordinates are canvas coordinates.
+  // Touches report window (page) coordinates; effects use overlay coordinates.
   const burstAtTouch = (event: GestureResponderEvent, colors: readonly string[], count = 60) => {
     fx.play('particle-burst', {
-      position: { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY },
+      position: fx.fromWindow({ x: event.nativeEvent.pageX, y: event.nativeEvent.pageY }),
       count,
       duration: 900,
       colors,
@@ -71,7 +76,7 @@ function Showcase() {
           // Five simultaneous bursts around the touch point.
           for (let i = 0; i < 5; i++) {
             fx.play('particle-burst', {
-              position: { x: e.nativeEvent.pageX + (i - 2) * 50, y: e.nativeEvent.pageY - 60 },
+              position: fx.fromWindow({ x: e.nativeEvent.pageX + (i - 2) * 50, y: e.nativeEvent.pageY - 60 }),
               count: 40,
               duration: 1100,
               colors: PALETTES.Gold,
@@ -105,8 +110,34 @@ function Showcase() {
   );
 }
 
+function Tabs({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void }) {
+  return (
+    <View style={styles.tabs}>
+      {(
+        [
+          ['fx', 'Effects'],
+          ['particles', 'Particles'],
+          ['motion', 'Motion'],
+          ['graphics', 'Graphics'],
+        ] as const
+      ).map(([id, label]) => (
+        <Pressable
+          key={id}
+          style={[styles.tab, tab === id && styles.tabActive]}
+          onPress={() => {
+            onChange(id);
+          }}
+        >
+          <Text style={styles.tabText}>{label}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
 export default function App() {
   const [fxEnabled, setFxEnabled] = useState(true);
+  const [tab, setTab] = useState<Tab>('fx');
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
@@ -114,11 +145,15 @@ export default function App() {
         <Text style={styles.toggleText}>Effects layer mounted</Text>
         <Switch value={fxEnabled} onValueChange={setFxEnabled} />
       </View>
+      <Tabs tab={tab} onChange={setTab} />
       {fxEnabled ? (
         // Unmounting the provider disposes the engine and cancels every running effect.
-        <GameFXProvider>
-          <Showcase />
-          <GameFXOverlay />
+        <GameFXProvider assets={DEMO_ASSETS}>
+          {/* The overlay fills this view (below the tabs), so effects never draw over the header. */}
+          <View style={styles.fxArea}>
+            {tab === 'fx' ? <EffectsDemo /> : tab === 'particles' ? <Showcase /> : tab === 'motion' ? <MotionDemo /> : <GraphicsDemo />}
+            <GameFXOverlay />
+          </View>
         </GameFXProvider>
       ) : (
         <Text style={styles.off}>Effects layer unmounted: engine disposed.</Text>
@@ -129,6 +164,7 @@ export default function App() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#14121F' },
+  fxArea: { flex: 1 },
   toggleRow: {
     paddingTop: 56,
     paddingHorizontal: 20,
@@ -137,6 +173,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   toggleText: { color: '#CFC8F0', fontSize: 15 },
+  tabs: { flexDirection: 'row', marginHorizontal: 20, marginTop: 8, gap: 8 },
+  tab: { flex: 1, paddingVertical: 8, borderRadius: 10, alignItems: 'center', backgroundColor: '#211D36' },
+  tabActive: { backgroundColor: '#5B4A9E' },
+  tabText: { color: 'white', fontSize: 14, fontWeight: '600' },
   content: { padding: 20, gap: 12 },
   title: { color: 'white', fontSize: 28, fontWeight: '700' },
   subtitle: { color: '#9A92C4' },

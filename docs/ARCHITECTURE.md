@@ -1,6 +1,6 @@
 # Architecture
 
-Status: **Phase 1.** Implemented so far: `runtime` (engine, clocks, seeded RNG, effect contract), `particles` (burst simulation), `effects` (`particle-burst`), `renderer/skia` and `react-native` (provider, overlay, hook). `animation`, `scene` and `sprites` are still plans for Phases 2 and 3. Open decisions are listed in [PROGRESS.md](PROGRESS.md).
+Status: **Phase 3.** Implemented: `runtime` (clocks, local timers with rate, seeded RNG, events, effect contract), `animation` (easing, tweens, keyframes, timelines, playbacks with speed), `scene` (scene graph, transforms, layers, shapes, display list, clipping, attachments, host-view targets), `graphics` (paints, gradients, paths, shaders, node effects, blend modes), `assets` (image cache), `sprites` (sheets, frame animations, sprite nodes), `engine` (the runtime that ties them together), `particles` (burst simulation), `effects` (`particle-burst`, `glow-border`, `energy-border`, `fire-border`), `renderer/skia` (the Skia adapter) and `react-native` (provider, overlay, targets, hooks, Skia image loader). Open decisions are listed in [PROGRESS.md](PROGRESS.md).
 
 ## What the product is
 
@@ -17,33 +17,46 @@ One package to start, with internal modules. Arrows point to what a module may i
                |         \
                |          src/renderer/skia   (draws a scene snapshot; owns native graphics resources)
                |         /
-   src/effects (typed registry, presets, parameter validation)
+   src/effects (typed registry, primitives, composites, presets, fire border, placement)
         |            \
-   src/particles   src/sprites   (emitters, lifetimes, atlases, frame playback)
+   src/particles   src/sprites   (bursts, emitters, shapes, curves, buffer pool; sheets, sprite nodes)
+        |
+   src/motion   (analytical motions: ballistic throw)
         |            /
-   src/scene  (nodes, parent/child transforms, layers, draw order, opacity, bounds, coordinate transforms)
+   src/engine (Engine: owns scene, targets, assets, playbacks, effects, cues, camera, quality;
+               frame loop; lifecycle; sequences such as throwAndExplode)
+        |            \
+   src/scene  (nodes, transforms, layers, shapes, display list, clipping, attachments, targets)
+        |     \
+        |      src/graphics (paints, gradients, PathData, shaders, node effects, blend modes)
+        |      src/assets   (AssetManager: ids, loading, dedupe, refcounts, LRU budget, disposal)
+   src/animation (easing, tweens, keyframes, timelines, markers, playbacks)
         |
-   src/animation (timelines, keyframes, easing, interpolation, motion paths, sequence/parallel/stagger)
-        |
-   src/runtime   (clock, scheduler, update loop, effect handles + state machine, cancel/pause/resume/repeat/seek, seeded RNG)
+   src/runtime   (clocks, local timers, emitter, errors, seeded RNG, effect contract)
 ```
+
+`graphics` and `assets` depend only on `runtime` (and `scene` for the `Point` type). `effects` and `particles` depend on `runtime`, `scene` and `graphics`. `engine` depends on all engine modules but on nothing from React, React Native or Skia.
 
 | Module | Pure TS, no React/RN/Skia? | First needed in |
 | --- | --- | --- |
-| `runtime` | Yes | **Phase 1 (done, minimal)**, Phase 2 (full) |
-| `animation` | Yes | Phase 2 |
-| `scene` | Yes | Phase 2 |
+| `runtime` | Yes | **Phase 1, extended in Phase 2** |
+| `animation` | Yes | **Phase 2 (done)** |
+| `scene` | Yes | **Phase 2 (done)** |
+| `engine` | Yes | **Phase 2** (moved out of `runtime`, extended) |
 | `particles` | Yes (simulation only) | **Phase 1 (burst done)**, Phase 3 |
-| `sprites` | Yes (frame math, atlas metadata) | Phase 3 |
-| `effects` | Yes | **Phase 1 (`particle-burst` done)**, Phase 4 |
+| `graphics` | Yes (descriptions only; Skia objects are made by the renderer) | **Phase 3 (done)** |
+| `assets` | Yes (platform decoding is an injected `ImageLoader`) | **Phase 3 (done)** |
+| `sprites` | Yes (frame math, sheet metadata, sprite nodes) | **Phase 3 (done)** |
+| `effects` | Yes | **Phase 1 (`particle-burst` done)**, **Phase 4 (done)** |
+| `motion` | Yes | **Phase 4 (done)** |
 | `renderer/skia` | No: the only module importing `@shopify/react-native-skia` drawing APIs | **Phase 1 (done)** |
 | `react-native` | No: host integration | **Phase 1 (done)** |
 
-The "pure" column is **enforced** by an ESLint `no-restricted-imports` rule in `eslint.config.mjs`. It rejects imports of `react`, `react-native`, `react-native-*`, `@shopify/*` and of the `renderer/` and `react-native/` folders from the six engine modules.
+The "pure" column is **enforced** by an ESLint `no-restricted-imports` rule in `eslint.config.mjs`. It rejects imports of `react`, `react-native`, `react-native-*`, `@shopify/*` and of the `renderer/` and `react-native/` folders from the ten engine modules (`runtime`, `animation`, `scene`, `engine`, `particles`, `sprites`, `graphics`, `assets`, `effects`, `motion`).
 
 Belote Tunisienne, or any other game, is an external consumer. Card-specific presets and the mapping from game events to effects live in that consumer, or in an optional adapter in Phase 6.
 
-## Thread model (Phase 1, as implemented)
+## Thread model (as implemented in Phases 1 and 2)
 
 The UI-thread worklet approach proposed in Phase 0 was **not** used for the first slice. It needs worklet-compatible simulation code and cannot be verified without a device. Phase 1 uses the simpler, documented fallback:
 
@@ -54,29 +67,102 @@ The UI-thread worklet approach proposed in Phase 0 was **not** used for the firs
 Consequences and limits:
 - A busy JS thread delays effect frames. Effects stay correct (time-based), but may skip frames.
 - Moving simulation to the UI thread remains an option for Phase 3. The pure, closed-form particle math was written so it can be moved to worklets later.
-- Assigning a JS-recorded `SkPicture` to a shared value has been verified on **web** (Reanimated web + CanvasKit) and in Jest. It has **not been verified on Android or iOS yet**.
+- Assigning a JS-recorded `SkPicture` to a shared value works on **Android** (Android 17 emulator, Expo Go, 2026-11-12), on web and in Jest. It is **not verified on iOS yet**, and frame timing has not been measured.
+- Phase 2 keeps this model. Animations, timelines and the scene graph run in the same JS-thread frame callback, and the scene is drawn into the same picture as the effects. A frame is published only when something runs or the scene changed; nothing goes through React state.
+- Phase 4 keeps it too. Two additions cross to the UI thread through Reanimated shared values, without React re-renders: the transform binding of `<GameFXTarget>` views (set from the engine's `transform` event) and the camera offset (screen shake), applied when the picture is recorded.
 
 ## Runtime concepts
 
-- **Clock**: injected interface (`now()`, frame subscription). `VirtualClock` for tests (advanced manually, no real sleeps). Frame clock adapter on device.
-- **Time sampling**: effects evaluate `t = now - start - pausedTime`, clamped to the effect's duration. They do not accumulate per-frame deltas, so large frame gaps cannot cause drift. Large deltas are a required test case.
-- **Seeded RNG**: all randomness (emission angles, colors, jitter) comes from an injected, seedable generator. The same seed gives the same particles in tests.
-- **Effect handle** (Phase 1): `fx.play(...)` returns a handle with `cancel()`, `status` and `finished: Promise<{ status: 'completed' | 'cancelled', reason? }>`. `finished` **resolves** on cancel and never rejects, so skipped effects cannot cause unhandled rejections. Invalid parameters throw synchronously at `play()`. `pause`, `resume`, `finish` and `seek` are planned for Phase 2.
-- **States** (Phase 1): `playing -> completed | cancelled`. The engine itself is `running -> disposed`. Disposal releases all resources and is idempotent.
-- **Effect contract**: `EffectDefinition.create(params, { random })` validates and returns an `EffectInstance` with `update(elapsedMs)`, `done`, `drawables` and `dispose()`. The engine calls `dispose` exactly once.
+- **Clock**: injected interface (`now()`, frame subscription). `VirtualClock` for tests (advanced manually, no real sleeps), `FrameClock` (`requestAnimationFrame`) on device.
+- **Engine time**: the engine maps clock time through a `LocalTimer`, so `engine.pause()` freezes every playback and effect at once and `resume()` continues without a jump. Every pausable object (engine, effect handle, playback) uses the same `LocalTimer`, which stores an origin and a pause point rather than accumulating deltas.
+- **Time sampling**: effects and animations evaluate absolute local time (`now - start - pausedTime`). They never accumulate per-frame deltas, so large frame gaps cannot cause drift, and the same times give the same values at any frame rate (tested).
+- **Seeded RNG**: all randomness comes from an injected, seedable generator.
+- **Subscription**: the engine listens to the clock only while a playback or effect is playing, or after a scene change (one frame to publish it). An idle or fully paused engine costs nothing per frame.
+- **Frame order**: (1) playbacks advance and deliver their markers (cues start their effects here), (2) effects update (including effects started in step 1), (3) attachments receive their targets' final transforms, (4) one `frame` event publishes, bottom to top, effects with a negative `zIndex`, the scene drawable (if it has visible shapes), then the other effects by `zIndex` and start order, plus the camera offset.
+- **States**: engine `running ⇄ paused → disposed`. Effect handle `playing ⇄ paused → completed | cancelled`. Playback `playing ⇄ paused → completed | cancelled | stopped`. `finished` promises always resolve and never reject. Disposal is idempotent and releases everything.
+- **Control**: `cancelAll()` cancels playbacks and effects (values stay where they are). `reset()` stops playbacks back to their initial state and cancels effects; the scene stays. `dispose()` also destroys the scene.
 - **Bounded resources**: at most 2000 particles per burst and `maxActiveEffects` (default 32) running effects. The oldest effect is cancelled beyond that limit.
 
-## Scene model (Phase 2, kept minimal)
+## Animation model (Phase 2)
 
-Nodes with a local transform (translate, rotate, scale, opacity), children, a layer and a z-order. World transforms are computed by pure functions. Renderers consume a **flat, sorted draw list** produced from the scene, never the scene graph itself. This keeps Skia out of the model and makes a second renderer possible later.
+- **Playable**: the base of tweens, keyframe animations, timelines and waits. It has `delay`, `repeat` (integer or `Infinity`) and `yoyo`. Layout in time: `delay`, then `repeat + 1` iterations of `duration`. `render(t)` is a **pure function of local time**: it sets targets to the state at `t` and keeps no other state than the start values captured at first render. Seeking backwards or forwards therefore equals playing to that point.
+- **Tween**: from start values (captured when it first renders past its delay, or given with `from`) to end values with one easing. **KeyframeAnimation**: per-property tracks between keyframes at `at ∈ [0, 1]`, each segment with the easing of the keyframe it approaches.
+- **Targets**: anything implementing `AnimationTarget` (`hasProperty`, `getProperty`, `setProperty`, optional `destroyed` and `expandProperty`). Scene nodes implement it; `objectTarget(obj)` adapts plain objects. Unknown properties and non-finite values are rejected when the animation is created. Destroyed targets are never written.
+- **Timeline**: places children on one axis by position (`'>'` end, `'<'` with the previous child, `'+=n'`, `'-=n'`, absolute ms, or relative to a marker). Children render in start order so later ones win on shared properties; children that are now in the future but were rendered before return to their initial state (latest first), which makes backward seeks and loops exact. Timelines are locked once played or nested. Infinite children are rejected (repeat the timeline instead). `sequence`, `parallel`, `stagger` and `wait` are thin helpers.
+- **Markers and callbacks**: `mark(name, position)` and `call(fn, position)`. Events of nested timelines bubble up with their offsets. With `repeat`, markers fire once per iteration; with `yoyo`, reversed iterations mirror their times.
+- **Event timing ("impact")**: a marker fires at its exact timeline time, not at the frame time. When a frame jumps from `t0` to `t1`, the playback collects the events in `(t0, t1]` (the first frame includes 0), sorts them by time (ties keep insertion order), and for each one **renders the state at the event time first, then dispatches it**. After the events it renders `t1`. So a listener for `impact` placed at the end of a fall sees the object exactly on the floor, even if the frame lands 39 ms later (tested). If a listener pauses the playback, it freezes exactly at the marker; if it cancels or seeks, the remaining events of that frame are dropped.
+- **Playback**: `engine.run(playable)` or `playable.play()` returns a `Playback` with `pause`, `resume`, `cancel` (values stay), `stop` (values return to the initial state), `finish` (jump to the end and deliver skipped markers with `skipped: true`; an endless loop finishes at the end of its current iteration), `seek` (no events), and events `start`, `pause`, `resume`, `marker`, `loop`, `interrupted`, `end`. The initial state is applied synchronously at `play()`; markers at time 0 fire on the first frame, so listeners attached right after `play()` receive them.
+- **Interruption** (`overwrite: 'auto'`, default): when an animation starts, other active playbacks stop writing the overlapping properties of the same target and receive an `interrupted` event; their timing is unchanged. `scale` overlaps `scaleX`/`scaleY`. `overwrite: 'none'` lets both write (the one rendered last wins).
+
+## Scene model (Phase 2)
+
+- `engine.scene` is a renderer-independent scene graph. `SceneNode` has position (its origin in the parent's space), rotation (degrees, clockwise on screen), scale (`scaleX`, `scaleY`, `scale` shorthand), opacity, visibility, `zIndex`, an optional layer (inherited) and an optional built-in shape (`rect` with optional corner radius, or `circle`, centred on the origin).
+- Local matrix = translate · rotate · scale. World matrices are cached and invalidated for the subtree when a node or an ancestor changes. `localToWorld`, `worldToLocal`, `localToNode`, world position/rotation/scale, world opacity and visibility, and axis-aligned world bounds are available.
+- Hierarchy: `createNode({ parent })`, `addChild` (reparenting, cycle checks), `removeChild`/`removeFromParent` (the node stays alive and can be re-added), `destroy()` (recursive; attachments end with `targetDestroyed`; animations skip destroyed nodes).
+- Draw order: layers from bottom to top (`scene.setLayers`), then depth-first within a layer, siblings by `zIndex` then insertion order. Hidden and fully transparent subtrees are skipped. The renderer receives a flat `scene` drawable (`{ matrix, opacity, shape }` per item), never the graph.
+- Opacity is multiplied per item. Group opacity with an offscreen layer (so overlapping children do not show through each other) is not implemented.
+- Phase 3 extends nodes with `shape` types `ellipse`, `path` and `image`, paints (`fill`, `stroke`), `blendMode`, `effects`, `group`, `clipChildren` and an explicit `size`. The renderer now receives a **display list** (`commands`) next to the flat `items`; see "Graphics model".
+
+## Graphics model (Phase 3)
+
+The engine describes **what** to draw in its own types; only `renderer/skia` turns them into Skia objects. Nothing in `graphics`, `scene` or `sprites` imports Skia.
+
+- **Shapes** (`scene/shape.ts`): `rect` (corner radius), `circle`, `ellipse`, `path` (`PathData`) and `image` (an `ImageAsset`, optional source rect for sprite frames, drawn size, anchor, `smoothing`). Rect, circle, ellipse and path take `fill` and/or `stroke` (`color` stays as a shorthand).
+- **Paints** (`graphics/paint.ts`): `Fill = Color | LinearGradient | RadialGradient | ShaderFill`; `Stroke = { fill, width, cap, join }`. Gradients are in the shape's local coordinates. Validated when assigned.
+- **Paths** (`graphics/path.ts`): `PathData` is a renderer-independent builder (`moveTo`, `lineTo`, `quadTo`, `cubicTo`, `close`, `rect`, `ellipse`, `polygon` and stars). It exposes SVG path data and a `version`; the renderer converts it once per version (`Path.MakeFromSVGString`) and caches the result in a `WeakMap`.
+- **Shaders** (`graphics/shader.ts`): `defineShader({ name, source, uniforms, fallback })` treats SkSL as data. Uniforms are listed in declaration order; `time` (engine seconds) and `size` (shape bounds) are filled automatically. The renderer compiles each definition once (`RuntimeEffect.Make`), caches failures, reports them once, and then draws the `fallback` color. Built-ins: `energyShader`, `fireShader`. A scene that shows a shader fill reports `hasAnimatedContent`, which keeps the engine publishing frames while it is visible.
+- **Node effects** (`graphics/effects.ts`): `glow` (colored blurred copy under the content), `blur`, `drop-shadow` and `color-matrix` (helpers `grayscale`, `brightness`). They apply to a node and its subtree through an offscreen layer.
+- **Blend modes**: 16 names (`normal`, `multiply`, `screen`, `plus`, `dst-in`, ...). On a plain node they apply to its shape; on a node with a layer they composite the whole layer.
+- **Display list**: `scene.drawable(time)` returns `commands`: `draw` (one shape with world matrix, opacity and blend mode), `begin-group` (optional clip to the node's shape outline, optional layer with effects and blend mode) and `end-group`. A group contains the node's own shape and its descendants **on the same layer**; descendants on another layer are drawn in that layer and escape the group (documented limitation of mixing layers and groups).
+- **Clipping and masking**: `clipChildren` clips descendants to the node's shape outline (any shape, including rotated). Masks: a node with `group: true` and a child with `blendMode: 'dst-in'` whose fill covers the group (for example a gradient or an image with transparency) keeps only what the mask covers. Skia only blends inside the drawn geometry, so a small opaque mask shape does not erase the area outside it.
+
+### Renderer adapter
+
+`SkiaEffectsRenderer` executes the display list with `save`/`concat`/`restoreToCount`, `clipRect`/`clipRRect`/`clipPath`, `saveLayer` with an image filter and blend mode, `drawImageRectOptions` (linear or nearest sampling), gradient shaders (cached per fill object), runtime shaders (`makeShader` with uniforms each frame), and composed image filters (`MakeDropShadow`, `MakeBlur`, `MakeColorFilter`). Unsupported drawables, failed shader compilation and unloaded images are reported once each through an `onWarning` callback and skipped (or drawn with the fallback color). `capabilities` lists drawable kinds, shapes, runtime-shader support, node effects, blend modes, gradients and clipping.
+
+## Assets (Phase 3)
+
+`engine.assets` is an `AssetManager`. Ids are stable strings. `register(id, source)` records a source; `load([...])`/`loadImage(id)` decode through an injected `ImageLoader` (React Native: `createSkiaImageLoader`, which resolves `require()` assets with `Image.resolveAssetSource` and decodes with `Skia.Image.MakeImageFromEncoded`).
+
+- Concurrent loads of the same id share one request; loaded images are cached.
+- Failures reject with `AssetLoadError`, set the state to `error`, emit an `error` event and can be retried.
+- Holders (`image` shapes, sprites) `retain`/`release` the asset. A node retains while it shows the image and releases on shape change or destroy.
+- `unload(id)` refuses while retained (unless `force`). Loads that finish after an unload are discarded and freed.
+- A soft byte budget (default 64 MiB, `width × height × 4`) evicts unreferenced images, least recently used first. Retained images are never evicted.
+- `dispose()` frees everything. An engine disposes the manager it created; a manager passed in (`assets: manager`) is shared and stays alive.
+
+## Sprites (Phase 3)
+
+- `SpriteSheet`: frames from a grid (frame size, count, margin, spacing) or explicit rectangles, plus named animations (`frames` list or range, `fps` or per-frame `frameDuration`, `loop`, `direction` `forward | reverse | alternate`, frame `events`). Immutable and shareable.
+- `Sprite extends SceneNode`: draws its current `frame` as an `image` shape (cached per frame, so frame changes do not allocate or touch refcounts). It moves, rotates, scales, fades, nests and attaches like any node.
+- `FrameAnimation extends Playable`: sets `sprite.frame` from local time. It runs through `engine.run` like any tween, so it uses **the engine clock** (no second clock), supports pause, resume, `speed`, seek, finish, loops and timelines, and frame events are markers (delivered at their exact time even when frames are skipped).
+- `sprite.play(name, { speed, repeat, delay })` replaces the sprite's previous `play` animation. Destroying the sprite cancels it and releases the image.
+- **Playback speed**: `LocalTimer` gained a rate (`base + (now − anchor) × rate`, re-anchored on change), so `playback.speed` changes are continuous and work for every playable.
+
+## Effect attachments and React Native views
+
+**Attachments (implemented as an interface):** `node.attach(attachment, { offset, inheritRotation, inheritScale })` returns a handle. Every frame, after animations, the engine calls `attachment.update(state)` with the world position of the attachment point (the offset is in the node's local space, so it rotates and scales with the node), world rotation, scale, opacity, visibility and whether the node is still in the scene. `onDetach(reason)` is called exactly once with `detached`, `targetDestroyed` or `engineDisposed`. What to do when the target is hidden or leaves the scene is the attachment's decision (for example stop emitting and let particles finish). Phase 3 effects (trails, fire, glow emitters) will implement `Attachment`, so they follow moving and rotating targets without new engine concepts.
+
+**React Native views (implemented in Phase 3):** the engine cannot capture or transform arbitrary native views, and does not try to. A view is represented in the scene by a **proxy node** that mirrors its layout, and effects attach to that node.
+
+1. `engine.targets` (`TargetRegistry`, platform-independent) maps ids to proxy nodes. It stores window rectangles and the overlay's window origin and converts between them, so a target is re-synced when either moves. The proxy's origin is the view's centre and its `size` is the view's size; attachments receive `width`/`height`.
+2. `<GameFXTarget id>` wraps its children in a `View`, registers the id on mount, measures with `measureInWindow` on layout, on `fx.remeasure()` (call it from `onScroll`), and optionally on every engine frame (`trackEveryFrame`, for transform animations). `rotation`/`scale` props pass a known transform, because measurement only returns an axis-aligned box.
+3. `<GameFXOverlay>` measures its own window origin on layout and sets it on the registry.
+4. `fx.attach(id, effect, params)` starts an effect with `target` set to the proxy node. When the view unmounts, the proxy node is destroyed and attached effects end (`targetDestroyed`).
+5. Scene nodes can be children of a proxy node, so engine content placed "inside" a view follows it.
+
+**Transform binding (Phase 4).** Arbitrary transforms of a native view cannot be observed reliably, so the engine owns them instead: each target has a `TargetMotion` (`x`, `y`, `rotation`, `scale`, `opacity`) plus removable offsets (shakes). The registry places the proxy node at layout + motion and emits a `transform` event; `<GameFXTarget>` (an `Animated.View`) writes it into Reanimated shared values that prepend translate/rotate/scale to the view's own style transform and multiply its opacity. Because the same numbers drive the view and the proxy node, effects stay aligned with a moving, rotating, scaling view. Measurement is deferred while the binding is not at identity, so the stored layout is always untransformed. Tweens, keyframes, timelines and `motion.throw` animate `TargetMotion` like any animation target.
+
+Limits: measurement is asynchronous, so a scrolled or animated view is followed with up to one frame of lag; `trackEveryFrame` costs one `measureInWindow` per frame per target. Transforms applied to the view other than through its binding are not read. Effects drawn around a view are drawn by the overlay; the view itself is never rendered by Skia. Effects that need the view's pixels (dissolve, distortion) would need a snapshot (`Skia.Image.MakeImageFromViewTag` exists) and are not implemented.
 
 ## Coordinate spaces
 
 | Space | Meaning |
 | --- | --- |
-| Canvas | Default. Density-independent points relative to the overlay's top-left corner, matching React Native layout units |
-| Window | Values from `measureInWindow` or touch events. Converted to canvas space by subtracting the overlay's window offset |
-| Target-relative | An effect anchored to a host view (`ref`). The host view is measured and converted to canvas space. Re-measure on layout, scroll or rotation |
+| Canvas (scene/world) | Default. Density-independent points relative to the overlay's top-left corner, matching React Native layout units. Scene world coordinates are canvas coordinates |
+| Node-local | A node's own space: origin at its position, axes rotated and scaled with it. Converted with `localToWorld`/`worldToLocal`/`localToNode` |
+| Window | Values from `measureInWindow` or touch events (`pageX`/`pageY`). Converted with `fx.fromWindow(point)`, which subtracts the overlay's measured window origin |
+| Target-relative | Children of a target's proxy node: origin at the centre of the host view (`<GameFXTarget id>`). Re-synced on layout, `remeasure` and overlay moves |
 
 Safe-area insets are exposed to effects as data. They are not applied silently, because a full-screen celebration may intentionally draw under the notch. Every public API that accepts a position states which space it uses.
 
@@ -84,15 +170,30 @@ Safe-area insets are exposed to effects as data. They are not applied silently, 
 
 - `<GameFXProvider>` owns the runtime, registry and lifecycle scope for its subtree.
 - `<GameFXOverlay>` (named `GameFXCanvas` in the Phase 0 proposal) is an absolutely positioned, transparent Skia canvas with `pointerEvents="none"` by default, so it never blocks the host app's touches. Interactive modes are opt-in.
-- `useGameFX()` returns the typed API (`play`, `cancelAll`, `activeCount`, `ready`). Custom effects are registered through the provider's `effects` prop.
-- Unmounting the provider cancels and disposes every effect, stops frame callbacks and releases images and atlases. No effect callback fires after unmount.
-- Reduced motion (`AccessibilityInfo`) and a quality setting are planned provider options (not in Phase 1).
+- `useGameFX()` returns the typed API (`play`, `attach`, `getTarget`, `animate`, `timeline`, `cue`, `throw`, `throwAndExplode`, `remeasure`, `fromWindow`, `cancelAll`, `activeCount`, `quality`, `setQuality`, `reducedMotion`, `ready`, `assets`, and `engine` for scene nodes, sprites, animations and timelines). Custom effects are registered through the provider's `effects` prop, scene layers through `layers`, images through `assets` (loaded with `useGameFXAssets`).
+- `<GameFXTarget id>` anchors effects to an ordinary view (see above).
+- Unmounting the provider cancels every playback and effect, destroys the scene (ending attachments), and stops frame callbacks. No effect or marker callback fires after unmount.
+- Quality (`quality`, `adaptiveQuality`) and reduced motion (`reducedMotion`, default from `AccessibilityInfo`, live) are provider props since Phase 4.
 
 ## Effects and extensibility
 
 - A typed **registry** maps preset names to definitions. `fx.play('confetti', params)` is type-checked against that preset's parameter type.
 - Consumers register custom presets through the same public API that built-in presets use. They never modify engine internals.
 - Parameters are validated at `play()` time with clear error messages.
+
+## Effects runtime and composition (Phase 4)
+
+Details and examples: [EFFECTS.md](EFFECTS.md).
+
+- **Contract**: an effect instance is created by its definition with validated parameters and an `EffectContext` (seeded `random`, quality profile, reduced motion, engine services). The engine calls `update(elapsedMs)` with absolute effect time, reads `drawables` and `done`, and calls `dispose()` once. Optional `stop()` (graceful end) and `setParams()` (runtime updates) back `handle.stop()` and `handle.update()`.
+- **Layers of reuse**: primitives (`particles` emitter effect, `flash`, `shockwave`, `screen-shake`), presets built on them (`confetti`, `golden-sparks`, `smoke`, `trail` are emitter configurations), composites (`defineComposite`: `explosion`, `victory`) that run child effects on one clock behind one handle and route parameter updates per layer, and the hand-written `fire-border` and `glow-pulse`.
+- **Placement**: one `Placement` helper resolves `position` or `target` (+ `offset`, `follow`) for every effect, so all effects follow moving and rotating targets the same way.
+- **Composition on the timeline**: `EffectCue` is a playable that starts an effect at its exact timeline time from the playback's event dispatch; the effect belongs to the playback (cancelled with it unless `detached`). `ThrowMotion` (`src/motion`) is an analytical ballistic playable with `launch`, `peak` and `impact` markers. `throwAndExplode` builds a timeline from these, plus a watcher that cancels it if the target is destroyed, and restores the view synchronously when cancelled.
+- **Rules**: replacement keys, `zIndex` ordering, cue ownership, target unmount and error isolation are listed in EFFECTS.md §6.
+- **Camera and offsets**: `screen-shake` adds removable offsets, either to the engine camera (applied to the whole overlay picture, around its centre) or to a target's transform binding (the native view shakes). Offsets are summed with the motion and removed exactly, so layout is never modified.
+- **Particles**: `ParticleEmitter` simulates bursts and continuous emission from point, line, circle, rect and path shapes, in world or local space, with curves over life. State lives in struct-of-arrays typed buffers taken from a shared, capacity-keyed pool. Randomness is seeded.
+- **Shaders**: SkSL chunks (`SHADER_CHUNKS`) are composed into definitions (`composeShader`); the renderer compiles each source once (cache keyed by source), feeds `time` and `size`, and falls back to a color with a one-time warning when runtime shaders are missing. Effects consult the renderer capabilities the overlay reports to the engine.
+- **Quality**: `low`/`medium`/`high` profiles scale particle counts and switch shaders, glow and secondary details; `AdaptiveQuality` steps the level from windowed frame times; reduced motion disables shakes, dims flashes and halves generic particle counts.
 
 ## Packaging and consumer contract
 
