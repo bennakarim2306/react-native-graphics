@@ -234,6 +234,23 @@ card.motion.reset();
 
 What is followed: layout changes, scrolling (with `remeasure`), the transform binding, and `rotation`/`scale` props passed to `<GameFXTarget>`. What is not: transforms you apply to the view by other means.
 
+**Local effects layer (default).** Effects that stay fixed to a target are drawn inside the target's own view, not in the overlay: `fire-border` flames, `glow-border`, `energy-border`, `glow-pulse` and local-space `particles` that follow the target. `<GameFXTarget>` adds a Skia canvas as its last child (pointer events off, hidden from accessibility), extending beyond the view as far as these effects reach, and draws them there in the view's own coordinates. The phone then moves the view and its fire in the same frame: they cannot drift apart during fast throws and spins, while the list scrolls, or when an ancestor view is animated by your own code.
+
+```tsx
+<GameFXTarget id="card" style={styles.card}>…</GameFXTarget>                          // local layer (default)
+<GameFXTarget id="slot" effectsLayer="overlay" style={styles.slot}>…</GameFXTarget>  // everything in the overlay
+```
+
+| | `effectsLayer="local"` (default) | `effectsLayer="overlay"` |
+| --- | --- | --- |
+| Follows transforms, scrolling, animated parents | Same frame (moved by the platform) | From measurements, can trail by a frame or more |
+| Clipped by an ancestor with `overflow: 'hidden'` | Yes | No |
+| Draw order | Above the view's children, below its later siblings | Above the whole app |
+| View opacity | Also applies to the effect | Not applied (the effect uses the target's motion opacity) |
+| Cost | One extra canvas while the target has fixed effects (removed about 1.5 s after the last one ends) | None |
+
+World-space particles (fire sparks, `trail`, `smoke`, `golden-sparks`, explosions) always draw in the overlay: they stay where they were born, so they must not move with the view. For custom effects, set `anchor` on a drawable (see section 9) to opt it into the local layer.
+
 ## 8. Quality, reduced motion and capabilities
 
 | Level | Particle scale | Runtime shaders | Glow | Details (sparks, second rings, smoke in small effects) |
@@ -270,12 +287,15 @@ fx.play('pop', { position: { x: 100, y: 100 } });
 
 `defineEffect({ name, create(params, context) })` writes an effect from scratch: `create` validates the parameters and returns an instance with `drawables`, `done`, `update(elapsedMs)` (elapsed time is absolute, so it is frame-rate independent), `dispose()`, and optionally `stop()` and `setParams()`. `context` gives the seeded `random`, the `quality` profile, `reducedMotion` and engine services (target resolution, camera and target offsets).
 
+A drawable that moves rigidly with its target (drawn in the target's frame every frame) can set `anchor: targetNode`. A `<GameFXTarget>` with a local layer then draws it inside the view (section 7); without one it is drawn by the overlay as usual. Leave `anchor` unset for anything that should stay behind when the target moves.
+
 ## 10. Limitations
 
 - Effects are drawn around React Native views, never into them: no dissolve, distortion or recolouring of a view's own pixels (no view snapshots).
-- Transforms of a view that are not made through `motion` are not tracked.
-- Measurement (`measureInWindow`) is asynchronous: during scrolling, effects follow with up to one frame of delay.
+- Transforms of a view that are not made through `motion` are not tracked by the engine (effects in the view's local layer still move with them, because they are part of the view).
+- Measurement (`measureInWindow`) is asynchronous: during scrolling, overlay-drawn effects (world-space particles, or targets with `effectsLayer="overlay"`) follow with a delay. Effects in a local layer do not.
+- A local layer is clipped by ancestors with `overflow: 'hidden'`; use `effectsLayer="overlay"` there.
 - All simulation and picture recording run on the JavaScript thread; Skia draws the picture on the UI thread. A busy JS thread delays effect frames (not the app's UI).
 - `distort` and `heatHaze` require runtime shaders; without them they are skipped.
 - Lightning, ice, dissolve and the other optional presets from the brief were not built.
-- Nothing in this guide has been verified on iOS. Android verification is pending for Phase 4 (see [PROGRESS.md](PROGRESS.md)).
+- Nothing in this guide has been verified on iOS. The local effects layer has not been run on Android yet (see [PROGRESS.md](PROGRESS.md)).

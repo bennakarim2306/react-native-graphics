@@ -126,7 +126,7 @@ const seq = fx.throwAndExplode('card', {
 seq.playback.cancel();                        // restores the view's transform and opacity at once
 ```
 
-The overlay draws effects around the view's measured rectangle; the view itself is not rendered by Skia. Effects combine on the engine timeline (`fx.timeline()`, `fx.cue(...)`, `fx.throw(...)`), and quality levels (`low`, `medium`, `high`) and reduced motion are provider props. See [docs/EFFECTS.md](docs/EFFECTS.md) for every effect, the particle and shader systems, composition rules and limitations.
+Effects that stay fixed to the card (the flames, glows, pulses) are drawn in a small canvas inside the card's own view, so the phone moves them with the card in the same frame, also while a list scrolls. Free particles such as sparks and explosions are drawn by the overlay. The view itself is not rendered by Skia. Effects combine on the engine timeline (`fx.timeline()`, `fx.cue(...)`, `fx.throw(...)`), and quality levels (`low`, `medium`, `high`) and reduced motion are provider props. See [docs/EFFECTS.md](docs/EFFECTS.md) for every effect, the particle and shader systems, composition rules and limitations.
 
 ## Showcase app
 

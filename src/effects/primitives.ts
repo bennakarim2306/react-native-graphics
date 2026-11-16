@@ -57,6 +57,8 @@ export class ParticlesInstance implements EffectInstance {
   update(elapsedMs: number): void {
     if (this.placement.targetGone && !this.stopped) this.stop();
     this.emitter.setTransform(this.placement.matrix());
+    // Local-space particles move rigidly with a followed target; world-space ones stay behind.
+    this.emitter.anchor = this.emitter.matrix ? this.placement.anchor : undefined;
     this.emitter.update(elapsedMs);
   }
 

@@ -6,7 +6,7 @@
 | 1. Working engine prototype (particle burst) | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not yet verified. See below |
 | 2. Runtime, scene graph and animation orchestration | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not verified. See below |
 | 3. Graphics engine, sprites, assets, RN anchoring | **Done on Android** (implemented 2026-11-12; verified by the owner on the Android 17 emulator, Expo Go, 2026-11-13). iOS not verified |
-| 4. Advanced effects, particles, shaders, composable FX | **Implemented, awaiting device check** (2026-11-13). Tests, bundles and web build pass; not yet run on Android or iOS. See below |
+| 4. Advanced effects, particles, shaders, composable FX | **Checked on Android by the owner, one fix pending re-check** (implemented 2026-11-13). The owner confirmed graphics and functions on the Android 17 emulator (2026-11-16) and reported effects trailing moving cards in the later demos; the fix (local effects layers) is implemented and tested, not yet re-checked on the emulator. iOS not verified. See below |
 | 5 and 6 | Not started (Phase 5 needs the owner's approval) |
 
 ## Phase 4: Advanced visual effects, particle systems and composable game FX (2026-11-13)
@@ -114,9 +114,23 @@ Additive except where noted.
 
 None known. One defect was found and fixed during the visual checks (Replay after Cancel, see above).
 
+### Follow-up: effects trailing moving cards (2026-11-16)
+
+**Owner's check (Android 17 emulator, Expo Go, 2026-11-16):** "The graphics are good and the functions as well", but in demos other than the first, animations did not follow the card on time; for example the fire lagged behind a moving card.
+
+**Cause.** Every effect was drawn by the overlay, one canvas above the app, positioned from measurements and the transform binding on the JavaScript thread. The platform moves native views on its own schedule: binding transforms are applied on the UI thread, scrolling is native and only reported back to JavaScript (then re-measured asynchronously), and a Skia surface is composited about a frame after it is drawn. The card and its fire could therefore be on different frames. Demo A (slow moves, no scrolling needed) hid it; the later demos need scrolling, and demo E spins cards at up to about 22° per frame, where one frame of difference is roughly 24 pt at a card's corner. This was not measured on the device; it is the explanation that fits the report and the pipeline.
+
+**Fix (SDK, not demo-only): local effects layers.** Drawables that move rigidly with a target carry `anchor` (fire flames, glow and energy borders, glow pulses, local-space particles that follow a target). `<GameFXTarget>` draws them in a Skia canvas inside its own view, in the view's untransformed coordinates, so the platform moves the card and its fire together in the same frame, including while scrolling and when parents are animated. The overlay leaves them out; world-space particles (sparks, trails, smoke, explosions) stay in the overlay. `effectsLayer="overlay"` keeps the old behaviour per target. Details: [ARCHITECTURE.md](ARCHITECTURE.md) (thread model), [EFFECTS.md §7](EFFECTS.md#7-react-native-targets-and-the-transform-binding).
+
+**Showcase:** B gets a "Fire on card" toggle, so fire rides along the throw; E gets "Flip all" (fast staggered hops with a full turn). All Skia drawing of one engine now shares one renderer (one shader cache).
+
+**Verification (container):** `npm run check` passes with 34 suites and 413 tests (14 new: `src/engine/localLayers.test.ts`, `src/react-native/localLayer.test.tsx`, a CanvasKit pixel test in `effects.render.test.ts` showing identical layer pixels after moving and rotating the view). The showcase type-checks against the packed SDK and bundles for Android, iOS and web. Web screenshots (`scripts/capture-effects-showcase.js`): fire stays on the card throughout the throw and the flips, and a scroll made with engine time frozen moves the fire with the card (no engine frame involved). **Not verified:** the fix on the Android emulator, iOS, and any timing measurement of the remaining lag of world-space particles.
+
+**Files:** `src/engine/localLayers.ts` (new), `src/react-native/sharedRenderer.ts` (new), `src/react-native/GameFXTarget.tsx`, `src/react-native/GameFXOverlay.tsx`, `src/scene/targets.ts`, `src/runtime/effect.ts`, `src/renderer/skia/SkiaEffectsRenderer.ts` (`record` takes a transform), `src/effects/{placement,fireBorder,border,presets,primitives}.ts`, `src/particles/emitter.ts`, tests, `example/EffectsDemo.tsx`, `scripts/capture-effects-showcase.js`, docs.
+
 ### Next step
 
-1. The owner runs the Effects tab on the Android 17 emulator (steps in the final report and `README.md`), including section F to record the first device numbers.
+1. The owner re-checks the Effects tab on the Android 17 emulator, especially B with "Fire on card", E ("Fire on all", then "Spin all" and "Flip all") and scrolling with fire on, plus section F for the first device numbers.
 2. Phase 5 starts only after the owner approves it.
 
 ## Phase 3: Graphics engine, sprites, assets and React Native anchoring (2026-11-12)

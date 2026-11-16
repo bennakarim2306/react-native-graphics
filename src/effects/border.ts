@@ -72,6 +72,7 @@ class BorderInstance implements EffectInstance {
   drawables: readonly Drawable[] = [];
   done = false;
   private readonly handle: AttachmentHandle;
+  private readonly node: SceneNode;
   private state: AttachmentState | null = null;
   private readonly padding: number;
   private readonly cornerRadius: number;
@@ -88,6 +89,7 @@ class BorderInstance implements EffectInstance {
     this.cornerRadius = nonNegative(params.cornerRadius ?? 12, 'cornerRadius', name);
     this.duration = params.duration ?? Infinity;
     if (!(this.duration > 0)) throw new InvalidOptionError(`${name} duration must be > 0.`);
+    this.node = params.target;
     this.handle = params.target.attach({
       update: (state) => {
         this.state = state;
@@ -152,6 +154,8 @@ class BorderInstance implements EffectInstance {
       time: s.time,
       items: commands.flatMap((c) => (c.op === 'draw' ? [c.item] : [])),
       commands,
+      // The outline moves rigidly with its target.
+      ...(this.node.destroyed ? {} : { anchor: this.node }),
     };
     this.drawables = [drawable];
   }

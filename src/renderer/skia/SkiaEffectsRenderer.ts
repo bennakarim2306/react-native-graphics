@@ -199,19 +199,21 @@ export class SkiaEffectsRenderer {
   /**
    * Records the drawables into a picture that a `<Picture>` element can display. `camera`
    * offsets everything (screen shake): a translation plus a rotation in degrees around
-   * `pivotX`/`pivotY` (usually the overlay centre).
+   * `pivotX`/`pivotY` (usually the overlay centre). `transform` maps overlay coordinates to the
+   * picture's own (a target's local layer); it applies inside the camera.
    */
-  record(drawables: readonly Drawable[], bounds?: SkRect, camera?: CameraTransform): SkPicture {
+  record(drawables: readonly Drawable[], bounds?: SkRect, camera?: CameraTransform, transform?: Matrix2D): SkPicture {
     const recorder = this.skia.PictureRecorder();
     const canvas = recorder.beginRecording(bounds);
     const moved = camera !== undefined && (camera.x !== 0 || camera.y !== 0 || camera.rotation !== 0);
+    if (moved || transform) canvas.save();
     if (moved) {
-      canvas.save();
       canvas.translate(camera.x, camera.y);
       if (camera.rotation !== 0) canvas.rotate(camera.rotation, camera.pivotX ?? 0, camera.pivotY ?? 0);
     }
+    if (transform) canvas.concat(toSkiaMatrix(transform));
     this.draw(canvas, drawables);
-    if (moved) canvas.restore();
+    if (moved || transform) canvas.restore();
     return recorder.finishRecordingAsPicture();
   }
 

@@ -74,6 +74,14 @@ export class Placement {
     return !this.node.destroyed && this.node.inScene && this.node.worldVisible;
   }
 
+  /**
+   * The followed target while it is alive (see `Drawable.anchor`): drawables built at this
+   * placement move rigidly with it. Undefined for fixed positions and `follow: false`.
+   */
+  get anchor(): SceneNode | undefined {
+    return this.node && this.follow && !this.node.destroyed ? this.node : undefined;
+  }
+
   /** Opacity of a followed target (1 otherwise). */
   get opacity(): number {
     return this.node && this.follow && !this.node.destroyed ? this.node.worldOpacity : 1;
@@ -115,7 +123,7 @@ export function shapeDrawable(
   shape: NodeShape,
   matrix: Matrix2D,
   opacity: number,
-  options: { blendMode?: BlendMode; effects?: readonly NodeEffect[] } = {},
+  options: { blendMode?: BlendMode; effects?: readonly NodeEffect[]; anchor?: SceneNode | undefined } = {},
 ): SceneDrawable {
   const blendMode = options.blendMode ?? 'normal';
   const effects = options.effects ?? [];
@@ -128,7 +136,7 @@ export function shapeDrawable(
         { op: 'end-group', nodeId: -1 },
       ]
     : [{ op: 'draw', item }];
-  return { kind: 'scene', time, items: [item], commands };
+  return options.anchor ? { kind: 'scene', time, items: [item], commands, anchor: options.anchor } : { kind: 'scene', time, items: [item], commands };
 }
 
 export function checkNumber(value: unknown, name: string, effect: string, range: { min?: number; max?: number } = {}): number {

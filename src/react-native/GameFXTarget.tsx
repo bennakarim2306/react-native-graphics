@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { Canvas, Picture } from '@shopify/react-native-skia';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentRef, ReactNode } from 'react';
-import { StyleSheet } from 'react-native';
-import type { StyleProp, ViewStyle } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import type { LayoutChangeEvent, StyleProp, ViewStyle } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
+import { anchoredTo, localLayerMatrix, localOverflow } from '../engine/localLayers';
+import type { Drawable } from '../runtime/effect';
 import type { TargetViewTransform } from '../scene/targets';
+import { acquireRenderer, blankPicture, releaseRenderer } from './sharedRenderer';
 import { useGameFXEngine } from './useGameFX';
 
 export interface GameFXTargetProps {
@@ -28,7 +32,49 @@ export interface GameFXTargetProps {
    */
   readonly rotation?: number;
   readonly scale?: number;
+  /**
+   * Where effects that stay fixed to this target are drawn: fire, glow and energy borders, glow
+   * pulses, and local-space particles that follow it.
+   *
+   * `local` (default): in a canvas inside this view, extending beyond its edges as far as the
+   * effects reach. The platform moves the view and these effects together in the same frame,
+   * so they never lag behind the transform binding, scrolling, or animations of parent views
+   * (even ones the engine does not know about). They draw above this view's children and below
+   * later siblings, and an ancestor with `overflow: 'hidden'` clips them.
+   *
+   * `overlay`: in the provider's overlay above the whole app, positioned from measurements on
+   * each engine frame. Never clipped, but can trail a fast-moving or scrolling view by a frame
+   * or more.
+   *
+   * World-space particles (sparks, trails, smoke, explosions) are always drawn by the overlay.
+   */
+  readonly effectsLayer?: 'local' | 'overlay';
   readonly testID?: string;
+}
+
+/** Engine frames without anchored effects before the local layer's canvas is unmounted. */
+const LAYER_IDLE_FRAMES = 90;
+/**
+ * Frames the overlay keeps drawing after a new layer is laid out, while the layer already
+ * draws too: a native canvas can need a frame or two before it first shows a picture, and a
+ * short overlap is invisible where a gap would flicker.
+ */
+const LAYER_HANDOFF_FRAMES = 3;
+const LAYER_STEP = 24;
+const LAYER_MAX = 480;
+
+/** Margin around the view for effects that reach `overflow` points beyond it (grows in steps). */
+const layerMarginFor = (overflow: number): number => Math.min(LAYER_MAX, Math.max(LAYER_STEP, Math.ceil((overflow + 4) / LAYER_STEP) * LAYER_STEP));
+
+interface LayerState {
+  /** Margin asked for (React state follows); null while no layer is wanted. */
+  requested: number | null;
+  /** The mounted layer's top-left corner in the view's coordinates; null until laid out. */
+  origin: { x: number; y: number } | null;
+  idleFrames: number;
+  drawn: boolean;
+  /** Frames left before the overlay stops drawing this target's anchored effects; -1 when it has. */
+  handoff: number;
 }
 
 const isIdentity = (t: TargetViewTransform): boolean =>
@@ -48,11 +94,16 @@ const isIdentity = (t: TargetViewTransform): boolean =>
  * the transform is applied on top of the measured layout box, and measurement is deferred
  * while a transform is active so the box is always measured untransformed.
  *
- * The children are rendered by React Native as usual: the engine draws effects *around* them
- * on the overlay; it does not render the component itself.
+ * The children are rendered by React Native as usual: the engine draws effects *around* them; it
+ * does not render the component itself. Effects that stay fixed to the target are drawn in a
+ * local layer inside this view (see `effectsLayer`), everything else by the overlay.
  */
-export function GameFXTarget({ id, children, style, trackEveryFrame = false, rotation, scale, testID }: GameFXTargetProps): ReactNode {
+export function GameFXTarget({ id, children, style, trackEveryFrame = false, rotation, scale, effectsLayer = 'local', testID }: GameFXTargetProps): ReactNode {
   const engine = useGameFXEngine();
+  const [layerMargin, setLayerMargin] = useState<number | null>(null);
+  const layerPicture = useSharedValue(blankPicture());
+  const layer = useRef<LayerState>({ requested: null, origin: null, idleFrames: 0, drawn: false, handoff: LAYER_HANDOFF_FRAMES });
+  const drawLayer = useRef<((drawables: readonly Drawable[]) => void) | null>(null);
   const ref = useRef<ComponentRef<typeof Animated.View>>(null);
   const measuring = useRef(false);
   const transformed = useRef(false);
@@ -156,9 +207,98 @@ export function GameFXTarget({ id, children, style, trackEveryFrame = false, rot
     measure();
   }, [rotation, scale, measure]);
 
+  // Local effects layer: records this target's anchored drawables in the view's own coordinates.
+  useEffect(() => {
+    if (!engine || engine.state === 'disposed' || effectsLayer !== 'local') return undefined;
+    const renderer = acquireRenderer(engine);
+    const state = layer.current;
+    const draw = (drawables: readonly Drawable[]) => {
+      const node = engine.targets.node(id);
+      if (!node || node.destroyed) return;
+      const anchored = anchoredTo(drawables, node);
+      if (anchored.length === 0) {
+        if (state.drawn) {
+          layerPicture.value = blankPicture();
+          state.drawn = false;
+        }
+        if (state.requested !== null && ++state.idleFrames > LAYER_IDLE_FRAMES) {
+          state.requested = null;
+          setLayerMargin(null);
+        }
+        return;
+      }
+      state.idleFrames = 0;
+      const margin = layerMarginFor(localOverflow(anchored, node));
+      if (state.requested === null || margin > state.requested) {
+        state.requested = margin;
+        setLayerMargin(margin);
+      }
+      // Until the layer is laid out, the overlay keeps drawing these effects.
+      if (!state.origin) return;
+      const matrix = localLayerMatrix(node, state.origin.x, state.origin.y);
+      if (!matrix) return;
+      layerPicture.value = renderer.record(anchored, undefined, undefined, matrix);
+      state.drawn = true;
+      if (state.handoff > 0 && --state.handoff === 0) {
+        state.handoff = -1;
+        engine.targets.setLocalLayer(id, true);
+      }
+    };
+    drawLayer.current = draw;
+    const off = engine.on('frame', (e) => {
+      draw(e.drawables);
+    });
+    return () => {
+      off();
+      drawLayer.current = null;
+      if (engine.state !== 'disposed') engine.targets.setLocalLayer(id, false);
+      layer.current = { requested: null, origin: null, idleFrames: 0, drawn: false, handoff: LAYER_HANDOFF_FRAMES };
+      layerPicture.value = blankPicture();
+      setLayerMargin(null);
+      releaseRenderer(engine);
+    };
+  }, [engine, id, effectsLayer, layerPicture]);
+
+  // The layer was unmounted (idle): the overlay draws this target's effects again until it returns.
+  useEffect(() => {
+    if (layerMargin !== null || !engine || engine.state === 'disposed') return;
+    layer.current.origin = null;
+    layer.current.handoff = LAYER_HANDOFF_FRAMES;
+    engine.targets.setLocalLayer(id, false);
+  }, [layerMargin, engine, id]);
+
+  const onLayerLayout = useCallback(
+    (e: LayoutChangeEvent) => {
+      if (!engine || engine.state === 'disposed') return;
+      const { x, y } = e.nativeEvent.layout;
+      layer.current.origin = { x, y };
+      // Draw into the layer now; the overlay hands over after a few frames (see LAYER_HANDOFF_FRAMES).
+      drawLayer.current?.(engine.drawables);
+    },
+    [engine, id],
+  );
+
   return (
     <Animated.View ref={ref} collapsable={false} onLayout={measure} style={[style, animatedStyle]} testID={testID}>
       {children}
+      {layerMargin !== null ? (
+        <View
+          pointerEvents="none"
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          onLayout={onLayerLayout}
+          style={[styles.layer, { top: -layerMargin, left: -layerMargin, right: -layerMargin, bottom: -layerMargin }]}
+          testID={testID !== undefined ? `${testID}-effects` : undefined}
+        >
+          <Canvas style={StyleSheet.absoluteFill}>
+            <Picture picture={layerPicture} />
+          </Canvas>
+        </View>
+      ) : null}
     </Animated.View>
   );
 }
+
+const styles = StyleSheet.create({
+  layer: { position: 'absolute' },
+});

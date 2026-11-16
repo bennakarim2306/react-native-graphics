@@ -47,9 +47,10 @@ Wraps its children in an `Animated.View` (Reanimated) and anchors effects to it.
 | `id` | `string` | required, unique per provider |
 | `trackEveryFrame` | `boolean` | `false`. Measure on every engine frame (views moved by transforms) |
 | `rotation`, `scale` | `number` | none. Known transform of the view (measurement is axis-aligned) |
-| `style`, `testID` | | |
+| `effectsLayer` | `'local' \| 'overlay'` | `'local'`. Where effects fixed to this target (fire, glow and energy borders, glow pulses, local particles that follow it) are drawn: in a canvas inside this view, moved by the platform together with it, or in the overlay. See [EFFECTS.md §7](EFFECTS.md#7-react-native-targets-and-the-transform-binding) |
+| `style`, `testID` | | `testID` also names the local layer view `${testID}-effects` |
 
-Measured on mount, on layout changes, on `fx.remeasure()` (call it from `onScroll`) and when the overlay moves; measuring waits while the binding is not at identity, so the stored layout is always the untransformed one. On unmount the proxy node is destroyed, attached effects end, sequences on it cancel and the binding is discarded. The children are ordinary React Native views; Skia does not render them.
+Measured on mount, on layout changes, on `fx.remeasure()` (call it from `onScroll`) and when the overlay moves; measuring waits while the binding is not at identity, so the stored layout is always the untransformed one. On unmount the proxy node is destroyed, attached effects end, sequences on it cancel and the binding is discarded. The children are ordinary React Native views; Skia does not render them. With the local layer, an extra absolutely positioned child (pointer events off, hidden from accessibility, not part of flex layout) holds a Skia canvas while the target has fixed effects.
 
 ### `useGameFXAssets(ids)`
 
@@ -176,7 +177,7 @@ fx.play(fountain, { x: 100, y: 400 });   // typed
 fx.play('fountain', { x: 100, y: 400 }); // by name, params checked at runtime only
 ```
 
-An `EffectInstance` receives the **elapsed time since it started** (not a per-frame delta), must report `done`, expose renderer-independent `drawables`, and release resources in `dispose` (called exactly once). The Skia renderer draws `scene` and `particles` drawables. Other kinds are skipped and reported once. An effect can draw shapes, images and filters by publishing a `SceneDrawable` (`{ kind: 'scene', time, items, commands }`); the border effects do this.
+An `EffectInstance` receives the **elapsed time since it started** (not a per-frame delta), must report `done`, expose renderer-independent `drawables`, and release resources in `dispose` (called exactly once). The Skia renderer draws `scene` and `particles` drawables. Other kinds are skipped and reported once. An effect can draw shapes, images and filters by publishing a `SceneDrawable` (`{ kind: 'scene', time, items, commands }`); the border effects do this. Any drawable may set `anchor` to the scene node it moves rigidly with; a `<GameFXTarget>` local layer then draws it inside the view (see `effectsLayer`).
 
 ## Scene graph
 
@@ -379,7 +380,7 @@ const handle = card.attach({
 handle.detach();
 ```
 
-`update` runs every frame after animations, with the world transform of the attachment point and the target's `width`/`height`. The border effects are built on it. `engine.targets` (`TargetRegistry`: `register`, `updateWindowLayout`, `setOrigin`, `node`, `layout`, `unregister`, `requestRemeasure`, events `added`, `layout`, `removed`, `remeasure`) is what `<GameFXTarget>` uses; `createHostViewBinding` and `syncNodeToLayout` remain available for custom host integrations.
+`update` runs every frame after animations, with the world transform of the attachment point and the target's `width`/`height`. The border effects are built on it. `engine.targets` (`TargetRegistry`: `register`, `updateWindowLayout`, `setOrigin`, `node`, `layout`, `unregister`, `requestRemeasure`, `setLocalLayer`, `drawsLocally`, `localLayerCount`, events `added`, `layout`, `removed`, `remeasure`, `transform`) is what `<GameFXTarget>` uses; `createHostViewBinding` and `syncNodeToLayout` remain available for custom host integrations.
 
 ## Engine without React (`react-native-graphics/core`)
 

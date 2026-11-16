@@ -12,6 +12,7 @@ import { ParticleEmitter } from '../../particles/emitter';
 import type { EmitterConfig } from '../../particles/emitter';
 import { VirtualClock } from '../../runtime/clock';
 import { createRandom } from '../../runtime/rng';
+import { anchoredTo, localLayerMatrix } from '../../engine/localLayers';
 import { composeTransform } from '../../scene/matrix';
 import { Scene } from '../../scene/scene';
 import { SkiaEffectsRenderer } from './SkiaEffectsRenderer';
@@ -248,6 +249,60 @@ describe('Phase 4 effects through the engine', () => {
     const shifted = pixels(surface);
     expect(at(shifted, 80, 50)[1]).toBe(255);
     expect(at(shifted, 50, 50)[3]).toBe(0);
+    engine.dispose();
+  });
+});
+
+describe('local effects layer (fire drawn inside the target view)', () => {
+  it("records a target's anchored fire in the view's own coordinates, the same whatever its transform", () => {
+    const clock = new VirtualClock(0);
+    const engine = createEngine({ clock, effects: builtInEffects, seed: 2 });
+    const renderer = new SkiaEffectsRenderer(Skia);
+    const node = engine.targets.register('card');
+    // An 80 × 120 view; the layer extends 60 pt beyond it on every side (200 × 240).
+    engine.targets.updateWindowLayout('card', { x: 300, y: 400, width: 80, height: 120 });
+    engine.attach('card', { effect: 'fire-border', flameHeight: 22, glow: false, sparks: false, padding: 0 });
+    const layerPixels = () => {
+      const matrix = localLayerMatrix(node, -60, -60);
+      if (!matrix) throw new Error('not invertible');
+      const picture = renderer.record(anchoredTo(engine.drawables, node), undefined, undefined, matrix);
+      const surface = Skia.Surface.Make(200, 240);
+      if (!surface) throw new Error('no surface');
+      surface.getCanvas().drawPicture(picture);
+      surface.flush();
+      const data = surface.makeImageSnapshot().readPixels(0, 0, { width: 200, height: 240, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul });
+      if (!data) throw new Error('readPixels failed');
+      return data as Uint8Array;
+    };
+    const alpha = (data: Uint8Array, x: number, y: number) => data[(y * 200 + x) * 4 + 3] ?? 0;
+    clock.advance(500, { frameMs: 16 });
+    const still = layerPixels();
+    // Flames sit on the view's edges (the box spans x 60–140, y 60–180 in the layer) and fade out.
+    const edgeHits = [alpha(still, 100, 56), alpha(still, 100, 184), alpha(still, 56, 120), alpha(still, 144, 120)];
+    expect(edgeHits.every((a) => a > 0)).toBe(true);
+    expect(alpha(still, 2, 2)).toBe(0);
+    expect(alpha(still, 100, 120)).toBeLessThan(alpha(still, 100, 58));
+    // Move and rotate the view through its binding at the same engine time: the layer picture is
+    // unchanged, because the platform applies the transform to the view and its layer.
+    const motion = engine.targets.motion('card');
+    if (!motion) throw new Error('no motion');
+    motion.x = 70;
+    motion.y = -40;
+    motion.rotation = 90;
+    clock.advance(0);
+    const differing = (a: Uint8Array, b: Uint8Array) => {
+      let n = 0;
+      for (let i = 3; i < a.length; i += 4) if (Math.abs((a[i] ?? 0) - (b[i] ?? 0)) > 24) n++;
+      return n;
+    };
+    expect(differing(still, layerPixels())).toBeLessThan(200 * 240 * 0.005);
+    // Scaled up 1.3×: flames keep their height on screen, so in the layer (scaled by the
+    // platform) they are 1.3× shorter, still on the view's edges.
+    motion.scale = 1.3;
+    clock.advance(0);
+    const scaled = layerPixels();
+    expect([alpha(scaled, 100, 57), alpha(scaled, 100, 183), alpha(scaled, 57, 120), alpha(scaled, 143, 120)].every((a) => a > 0)).toBe(true);
+    expect(alpha(scaled, 100, 40)).toBeLessThanOrEqual(alpha(still, 100, 40));
     engine.dispose();
   });
 });

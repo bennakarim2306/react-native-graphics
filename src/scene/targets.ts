@@ -193,6 +193,7 @@ interface TargetEntry {
  */
 export class TargetRegistry {
   private readonly entries = new Map<string, TargetEntry>();
+  private readonly localLayers = new Set<SceneNode>();
   private readonly emitter: Emitter<TargetEvents>;
   private overlayOrigin: Point = { x: 0, y: 0 };
   private disposed = false;
@@ -261,6 +262,7 @@ export class TargetRegistry {
     const entry = this.entries.get(id);
     if (!entry) return;
     this.entries.delete(id);
+    this.localLayers.delete(entry.binding.node);
     entry.motion.kill();
     for (const offset of entry.offsets) offset.removed = true;
     entry.offsets.clear();
@@ -355,6 +357,28 @@ export class TargetRegistry {
 
   get ids(): readonly string[] {
     return [...this.entries.keys()];
+  }
+
+  /**
+   * Called by a host when it starts or stops drawing the target's anchored drawables (see
+   * `Drawable.anchor`) in a layer inside the view itself. While active, the overlay leaves
+   * them out. Unknown ids are ignored.
+   */
+  setLocalLayer(id: string, active: boolean): void {
+    const node = this.entries.get(id)?.binding.node;
+    if (!node) return;
+    if (active) this.localLayers.add(node);
+    else this.localLayers.delete(node);
+  }
+
+  /** True when `node` is a target's proxy node and its host draws its anchored drawables itself. */
+  drawsLocally(node: SceneNode): boolean {
+    return this.localLayers.has(node);
+  }
+
+  /** Number of targets whose host currently draws a local layer. */
+  get localLayerCount(): number {
+    return this.localLayers.size;
   }
 
   /** Asks hosts to measure again, for example after the app scrolled a list. */

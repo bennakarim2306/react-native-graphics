@@ -10,6 +10,14 @@ import type { Random } from './rng';
  */
 export interface Drawable {
   readonly kind: string;
+  /**
+   * The node this drawable is rigidly attached to (it moves, rotates and scales with it), when
+   * there is one: fire, glow and energy borders, glow pulses, and local-space particles that
+   * follow a target. A host that draws a target's view natively (a `GameFXTarget` with a local
+   * effects layer) may draw such drawables inside the view instead of the overlay, so the
+   * platform moves them together with the view in the same frame.
+   */
+  readonly anchor?: SceneNode | undefined;
 }
 
 /** An additive offset that an effect (for example a shake) applies while it runs. */

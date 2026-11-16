@@ -7,6 +7,7 @@ import { InvalidOptionError } from '../runtime/errors';
 import type { Random } from '../runtime/rng';
 import { IDENTITY } from '../scene/matrix';
 import type { Matrix2D, Point } from '../scene/matrix';
+import type { SceneNode } from '../scene/node';
 import type { ParticleDrawable, ParticleLookKind } from './burst';
 import { resolveCurve, resolveSpread, sampleSpread } from './curves';
 import type { CurveFunction, ResolvedSpread, Spread, ValueCurve } from './curves';
@@ -287,6 +288,8 @@ export class ParticleEmitter implements ParticleDrawable {
   readonly frames: readonly Rect[] | undefined;
   /** Local space: transform applied to every particle when drawing. */
   matrix: Matrix2D | undefined;
+  /** Node the particles move rigidly with (set by effects for local-space emitters); see `Drawable.anchor`. */
+  anchor: SceneNode | undefined;
   private readonly cfg: Resolved;
   private buffers: ParticleBuffers;
   private freeTop: number;

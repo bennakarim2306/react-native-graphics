@@ -172,6 +172,10 @@ export class FireBorderInstance implements EffectInstance {
     for (const e of [this.flames, this.sparkEmitter]) {
       if (e && frame) e.setTransform(frame);
     }
+    // Particle flames (local space) move rigidly with the target; sparks (world space) do not.
+    for (const e of [this.flames, ...this.draining]) {
+      if (e?.matrix) e.anchor = alive ? this.node : undefined;
+    }
     for (const e of [...this.draining, this.flames, this.sparkEmitter]) e?.update(elapsedMs);
     for (let i = this.draining.length - 1; i >= 0; i--) {
       const e = this.draining[i];
@@ -211,7 +215,7 @@ export class FireBorderInstance implements EffectInstance {
           },
           frame,
           opacity,
-          { blendMode: 'plus', effects },
+          { blendMode: 'plus', effects, anchor: this.node },
         ),
       );
     }

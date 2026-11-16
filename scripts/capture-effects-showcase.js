@@ -79,6 +79,16 @@ const scale = Number(process.argv[3] || 2);
   await wait(600);
   await click('Move'); await wait(430); await shot('a5-fire-moved');
   await wait(600);
+  // Scroll with the engine frozen: fire drawn in the card's own layer moves with the card even
+  // though no engine frame runs (an overlay-drawn effect would stay behind until re-measured).
+  await page.evaluate(() => window.__fxTime.freeze());
+  await page.mouse.move(206, 600);
+  await page.mouse.wheel(0, 140);
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${out}/a6-fire-scrolled-engine-frozen.png` });
+  await page.evaluate(() => window.__fxTime.run());
+  await page.mouse.wheel(0, -140);
+  await page.waitForTimeout(400);
   await click('Orange'); await wait(200);
 
   // B. Throw & Explode
@@ -94,6 +104,13 @@ const scale = Number(process.argv[3] || 2);
   await wait(300); await shot('b9-vanish-gone');
   await click('Throw & Explode'); await wait(380); await click('Cancel'); await shotOnText(/^Cancelled/, 'b10-cancelled-restored');
   await click('return');
+  // Fire riding on the thrown card.
+  await click('Fire on card'); await wait(700);
+  await click('Throw & Explode'); await wait(260); await shot('b11-fire-throw-rising');
+  await shotOnText(/^Peak$/, 'b12-fire-throw-peak');
+  await wait(300); await shot('b13-fire-throw-falling');
+  await shotOnText(/^Settled/, 'b14-fire-throw-settled');
+  await click('Fire off'); await wait(600);
 
   // C. Particle playground
   await scrollTo('C · Particle playground');
@@ -125,6 +142,8 @@ const scale = Number(process.argv[3] || 2);
   await click('Glow + sparks on middle'); await wait(500); await shot('e1-fire-glow-sparks');
   await click('Spin all'); await wait(380); await shot('e2-spin-all');
   await wait(800);
+  await click('Flip all'); await wait(420); await shot('e5-flip-all');
+  await wait(900);
   await click('Explode in sequence'); await wait(560); await shot('e3-explode-sequence');
   await wait(3000);
   await click('Clear all'); await wait(1200); await shot('e4-cleared');

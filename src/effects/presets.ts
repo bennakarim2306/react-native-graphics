@@ -317,7 +317,7 @@ export const glowPulse: EffectDefinition<GlowPulseParams> = defineEffect<GlowPul
               stroke: { fill: color, width: 3 },
             };
         const effects = glow ? [{ type: 'glow' as const, color, radius: radius * (0.7 + 0.3 * (1 - phase)), strength: Math.min(2, intensity * 1.4) }] : [];
-        drawables.push(shapeDrawable(elapsed, shape, matrix, Math.min(1, fade), { blendMode: 'plus', effects }));
+        drawables.push(shapeDrawable(elapsed, shape, matrix, Math.min(1, fade), { blendMode: 'plus', effects, anchor: placement.anchor }));
         // A steady inner line keeps the target outlined between pulses.
         const inner = circle
           ? { type: 'circle' as const, radius: Math.max(w - grow * 2, h - grow * 2) / 2, stroke: { fill: color, width: 2 } }
@@ -328,7 +328,7 @@ export const glowPulse: EffectDefinition<GlowPulseParams> = defineEffect<GlowPul
               cornerRadius: Math.min(corner, (w - grow * 2) / 2, (h - grow * 2) / 2),
               stroke: { fill: color, width: 2 },
             };
-        drawables.push(shapeDrawable(elapsed, inner, matrix, Math.min(1, 0.6 * intensity * placement.opacity), { blendMode: 'plus' }));
+        drawables.push(shapeDrawable(elapsed, inner, matrix, Math.min(1, 0.6 * intensity * placement.opacity), { blendMode: 'plus', anchor: placement.anchor }));
       },
       stop() {
         stopAt = 0;

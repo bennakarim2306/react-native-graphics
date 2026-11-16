@@ -9,7 +9,10 @@
  *
  * Only the public `react-native-graphics` entry point is used. Views move through their
  * transform binding (`fx.getTarget(id).motion`), so effects stay attached while they fly,
- * spin and shake. React state changes only on button presses, never per frame.
+ * spin and shake. Effects fixed to a card (fire, glow pulses) are drawn inside the card's own
+ * view (`GameFXTarget`'s local effects layer), so the phone moves them with the card in the
+ * same frame, also while the list scrolls. React state changes only on button presses, never
+ * per frame.
  */
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -122,7 +125,19 @@ function ThrowDemo() {
   const fx = useGameFX();
   const [status, setStatus] = useState('Ready');
   const [after, setAfter] = useState<'return' | 'vanish'>('return');
+  const [fire, setFire] = useState(false);
   const seq = useRef<ThrowAndExplodeSequence | null>(null);
+  const fireHandle = useRef<EffectHandle | null>(null);
+
+  const toggleFire = () => {
+    if (fireHandle.current) {
+      fireHandle.current.stop();
+      fireHandle.current = null;
+    } else {
+      fireHandle.current = fx.attach('throw-card', { effect: 'fire-border', flameHeight: 16, intensity: 1, cornerRadius: 10 }, { key: 'throw-fire' });
+    }
+    setFire(fireHandle.current !== null);
+  };
 
   const play = () => {
     seq.current?.playback.cancel();
@@ -140,10 +155,16 @@ function ThrowDemo() {
       if (seq.current === s) setStatus(r.status === 'completed' ? 'Settled (consistent state)' : 'Cancelled: card restored');
     });
   };
-  useEffect(() => () => seq.current?.playback.cancel(), []);
+  useEffect(
+    () => () => {
+      seq.current?.playback.cancel();
+      fireHandle.current?.cancel();
+    },
+    [],
+  );
 
   return (
-    <Card title="B · Throw & Explode" subtitle="The real view is launched, rotates, peaks, falls faster, explodes at the impact, then settles.">
+    <Card title="B · Throw & Explode" subtitle="The real view is launched, rotates, peaks, falls faster, explodes at the impact, then settles. Turn on fire to see it ride along.">
       <View style={styles.stageTall}>
         <View style={styles.table} />
         <GameFXTarget id="throw-card" style={[styles.playingCard, styles.throwStart]}>
@@ -156,7 +177,10 @@ function ThrowDemo() {
         <Button label="Replay" onPress={play} />
         <Button label="Cancel" tone="danger" onPress={() => seq.current?.playback.cancel()} />
       </View>
-      <Chips options={['return', 'vanish'] as const} value={after} onChange={setAfter} />
+      <View style={styles.row}>
+        <Chips options={['return', 'vanish'] as const} value={after} onChange={setAfter} />
+        <Button small label={fire ? 'Fire off' : 'Fire on card'} tone={fire ? 'on' : 'normal'} onPress={toggleFire} />
+      </View>
     </Card>
   );
 }
@@ -310,6 +334,7 @@ const MULTI = ['multi-1', 'multi-2', 'multi-3'] as const;
 function CombinedDemo() {
   const fx = useGameFX();
   const playback = useRef<Playback | null>(null);
+  const flips = useRef<Playback | null>(null);
   return (
     <Card title="E · Combined effects" subtitle="Several effects per target, replacement keys, z-order and staggered timelines.">
       <View style={[styles.stage, styles.multiRow]}>
@@ -348,6 +373,38 @@ function CombinedDemo() {
           }}
         />
         <Button small label="Spin all" onPress={() => { MULTI.forEach((id, i) => { wiggle(fx, id, { rotation: 180 }, 400 + i * 120); }); }} />
+        <Button
+          small
+          label="Flip all"
+          onPress={() => {
+            // A fast hop with a full turn, staggered on one timeline: fire must stay on each card.
+            const engine = fx.engine;
+            if (!engine) return;
+            flips.current?.cancel();
+            const tl = fx.timeline();
+            const motions = MULTI.map((id) => fx.getTarget(id)?.motion);
+            motions.forEach((motion, i) => {
+              if (!motion) return;
+              tl.add(
+                engine.keyframes(motion, {
+                  duration: 700,
+                  keyframes: [
+                    { at: 0, y: 0, rotation: 0 },
+                    { at: 0.5, y: -42, rotation: 180, easing: 'easeOutQuad' },
+                    { at: 1, y: 0, rotation: 360, easing: 'easeInQuad' },
+                  ],
+                }),
+                i * 140,
+              );
+            });
+            const playback = tl.play();
+            flips.current = playback;
+            // 360° looks like 0°: reset so the views count as untransformed again (re-measurable).
+            playback.on('end', () => {
+              for (const motion of motions) if (motion && !motion.destroyed) motion.rotation = 0;
+            });
+          }}
+        />
         <Button small label="Victory on middle" onPress={() => fx.play('victory', { target: 'multi-2', width: 220 })} />
         <Button
           small
@@ -355,6 +412,7 @@ function CombinedDemo() {
           tone="danger"
           onPress={() => {
             playback.current?.cancel();
+            flips.current?.cancel();
             fx.cancelAll();
           }}
         />
