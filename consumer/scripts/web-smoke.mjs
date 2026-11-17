@@ -154,9 +154,11 @@ try {
   await open('Composition');
   await tap('stack');
   await tap('sequence-play');
-  r = await waitText('sequence-stage', /Reward/, 4000);
+  // The reward stage is on screen for only 150 ms, too short to catch reliably by polling its
+  // text, so the check reads the path of stages the screen recorded.
+  r = await waitText('sequence-path', /Reward/, 4000);
   await shot('e-composition-reward');
-  check('E: sequence reaches the reward stage', r.ok, r.last);
+  check('E: sequence reaches the reward stage', r.ok && r.last.startsWith('Move › Impact › Reward'), r.last);
   r = await waitText('sequence-stage', /Done/, 4000);
   check('E: sequence completes', r.ok, r.last);
   check('E: three effects on one view', /3/.test(await text('stack-count')));
