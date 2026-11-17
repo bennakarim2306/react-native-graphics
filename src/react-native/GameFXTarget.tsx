@@ -137,19 +137,27 @@ export function GameFXTarget({ id, children, style, trackEveryFrame = false, rot
   const styleTransform = useMemo(() => (Array.isArray(flat?.transform) ? flat.transform : []) as NonNullable<ViewStyle['transform']>, [flat]);
   const styleOpacity = typeof flat?.opacity === 'number' ? flat.opacity : 1;
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    opacity: styleOpacity * opacity.value * concealed.value,
-    transform: [
-      { translateX: translateX.value },
-      { translateY: translateY.value },
-      { rotate: `${String(rotate.value)}deg` },
-      { scaleX: scaleX.value },
-      { scaleY: scaleY.value },
-      ...(styleTransform as object[]),
-    ] as NonNullable<ViewStyle['transform']>,
-  }));
+  // Explicit 'worklet' directives: the callbacks run on the UI thread whichever build of the
+  // SDK the app's bundler picks (Reanimated's Babel plugin also detects them by name).
+  const animatedStyle = useAnimatedStyle(() => {
+    'worklet';
+    return {
+      opacity: styleOpacity * opacity.value * concealed.value,
+      transform: [
+        { translateX: translateX.value },
+        { translateY: translateY.value },
+        { rotate: `${String(rotate.value)}deg` },
+        { scaleX: scaleX.value },
+        { scaleY: scaleY.value },
+        ...(styleTransform as object[]),
+      ] as NonNullable<ViewStyle['transform']>,
+    };
+  });
 
-  const layerStyle = useAnimatedStyle(() => ({ opacity: layerOpacity.value }));
+  const layerStyle = useAnimatedStyle(() => {
+    'worklet';
+    return { opacity: layerOpacity.value };
+  });
 
   const measure = useCallback(() => {
     const view = ref.current;

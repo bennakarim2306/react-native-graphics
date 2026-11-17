@@ -13,7 +13,12 @@ export interface PlaybackResult {
    * - `stopped`: returned to the initial state with `stop()` or `engine.reset()`
    */
   readonly status: 'completed' | 'cancelled' | 'stopped';
-  readonly reason?: 'user' | 'cancelAll' | 'reset' | 'disposed';
+  /**
+   * Why it was cancelled or stopped: `user` (`cancel()`/`stop()`), `cancelAll`, `reset`,
+   * `disposed` (the engine), or `targetDestroyed`: the object a tween or keyframe animation
+   * animates was destroyed (scene node destroyed, `<GameFXTarget>` unmounted).
+   */
+  readonly reason?: 'user' | 'cancelAll' | 'reset' | 'disposed' | 'targetDestroyed';
 }
 
 export interface MarkerEvent extends MarkerInfo {

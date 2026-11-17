@@ -3,7 +3,7 @@ import type { Playback, PlaybackHost, PlaybackResult } from '../animation/playba
 import { Playable, Wait } from '../animation/playable';
 import type { PlayableOptions, PlayableRunner, PropertyAnimationLike } from '../animation/playable';
 import { parallel, sequence, stagger, Timeline } from '../animation/timeline';
-import { KeyframeAnimation, Tween } from '../animation/tween';
+import { KeyframeAnimation, PropertyAnimation, Tween } from '../animation/tween';
 import type { KeyframeOptions, TweenVars } from '../animation/tween';
 import type { AnimationTarget } from '../animation/target';
 import type { Clock } from '../runtime/clock';
@@ -18,7 +18,7 @@ import type {
   TargetSnapshot,
   TransformOffset,
 } from '../runtime/effect';
-import { AdaptiveQuality, resolveQuality } from '../runtime/quality';
+import { AdaptiveQuality, DEFAULT_QUALITY, resolveQuality } from '../runtime/quality';
 import type { AdaptiveQualityOptions, QualityLevel, QualityProfile } from '../runtime/quality';
 import { Emitter, rethrowAsync } from '../runtime/emitter';
 import type { ErrorReporter, Unsubscribe } from '../runtime/emitter';
@@ -139,6 +139,29 @@ export interface FrameEvent {
   readonly activeCount: number;
   /** Offset of the whole overlay (screen shake), to apply when drawing. */
   readonly camera: { readonly x: number; readonly y: number; readonly rotation: number };
+}
+
+/**
+ * A snapshot of what an engine holds, for diagnostics and leak checks (`engine.stats`).
+ * After every effect and playback ended and every `<GameFXTarget>` unmounted, `activeEffects`,
+ * `playbacks`, `targets` and `localLayers` are 0 and `frameLoop` is false.
+ */
+export interface EngineStats {
+  readonly state: EngineState;
+  /** Effects playing or paused. */
+  readonly activeEffects: number;
+  /** Animation playbacks playing or paused (timelines count once). */
+  readonly playbacks: number;
+  /** Scene nodes, including target proxy nodes. */
+  readonly sceneNodes: number;
+  /** Registered host targets (`<GameFXTarget>`s). */
+  readonly targets: number;
+  /** Targets that currently draw effects in their own local layer. */
+  readonly localLayers: number;
+  /** True while the engine is subscribed to its clock (it only is while something animates). */
+  readonly frameLoop: boolean;
+  /** The asset manager's counts: registered, loaded and loading images, decoded bytes. */
+  readonly assets: { readonly registered: number; readonly loaded: number; readonly loading: number; readonly bytes: number };
 }
 
 export interface EngineEvents {
@@ -382,7 +405,7 @@ export class Engine implements PlayableRunner {
         this.onPlaybackEnded(playback, result);
       },
     };
-    this.qualityProfile = resolveQuality(options.quality ?? 'medium');
+    this.qualityProfile = resolveQuality(options.quality ?? DEFAULT_QUALITY);
     const adaptive = options.adaptiveQuality;
     this.adaptive = adaptive
       ? new AdaptiveQuality(this.qualityProfile.level, typeof adaptive === 'object' ? adaptive : {})
@@ -583,6 +606,20 @@ export class Engine implements PlayableRunner {
   /** Number of animation playbacks (playing or paused). */
   get playbackCount(): number {
     return this.playbacks.length;
+  }
+
+  /** What the engine holds right now (see `EngineStats`). Works after `dispose` too. */
+  get stats(): EngineStats {
+    return {
+      state: this.currentState,
+      activeEffects: this.active.length,
+      playbacks: this.playbacks.length,
+      sceneNodes: this.scene.nodeCount,
+      targets: this.targets.ids.length,
+      localLayers: this.targets.localLayerCount,
+      frameLoop: this.unsubscribeClock !== null,
+      assets: this.assets.stats,
+    };
   }
 
   /** Drawables published by the most recent frame. */
@@ -917,6 +954,13 @@ export class Engine implements PlayableRunner {
     this.inFrame = true;
     if (this.currentState === 'running') {
       for (const playback of [...this.playbacks]) {
+        // A tween or keyframe animation whose object is gone (node destroyed, target view
+        // unmounted) has nothing left to do; ending it lets an endless one stop the frame loop.
+        // Timelines keep running: they may animate other objects and fire cues.
+        if (playback.root instanceof PropertyAnimation && playback.root.target.destroyed === true) {
+          playback.cancelWith('targetDestroyed');
+          continue;
+        }
         try {
           playback.tick();
         } catch (error) {

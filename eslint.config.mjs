@@ -3,7 +3,7 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['lib/', 'coverage/', 'node_modules/', 'example/'] },
+  { ignores: ['lib/', 'coverage/', 'node_modules/', 'example/', 'consumer/'] },
   js.configs.recommended,
   {
     files: ['*.config.js', 'jest.setup.*.js'],
@@ -13,6 +13,11 @@ export default tseslint.config(
     // Playwright capture script: Node code plus functions evaluated in the page.
     files: ['scripts/*.js'],
     languageOptions: { sourceType: 'commonjs', globals: { ...globals.node, ...globals.browser } },
+  },
+  {
+    // Build, packaging and consumer scripts (ES modules for Node).
+    files: ['scripts/*.mjs'],
+    languageOptions: { sourceType: 'module', globals: globals.node },
   },
   {
     files: ['src/**/*.ts', 'src/**/*.tsx'],

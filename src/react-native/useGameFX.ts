@@ -15,7 +15,8 @@ import type { EffectDefinition } from '../runtime/effect';
 import type { QualityLevel, QualityProfile } from '../runtime/quality';
 import { isTargetHandle } from '../scene/targets';
 import type { TargetHandle, TargetMotionProperty, TargetRef } from '../scene/targets';
-import { InvalidOptionError } from '../runtime/errors';
+import { InvalidOptionError, NotReadyError } from '../runtime/errors';
+import { DEFAULT_QUALITY } from '../runtime/quality';
 import { GameFXContext } from './context';
 
 /** Built-in effects that can follow a target (they take a `target` parameter). */
@@ -32,10 +33,23 @@ export type AttachableEffect =
   | 'flash'
   | 'shockwave'
   | 'explosion'
-  | 'victory';
+  | 'victory'
+  | 'burn-away';
 
-/** `fx.attach(target, { effect: 'fire-border', intensity: 1 })`. */
-export type AttachEffectSpec<K extends AttachableEffect> = { readonly effect: K } & Omit<BuiltInEffects[K], 'target'>;
+/**
+ * A custom effect name. Built-in names are excluded, so a misspelled parameter of a built-in
+ * effect is a type error instead of falling back to the untyped custom-effect overload.
+ */
+export type CustomEffectName<N extends string> = N extends keyof BuiltInEffects ? never : N;
+
+/**
+ * `fx.attach(target, { effect: 'fire-border', intensity: 1 })`. Distributes over a union of
+ * names, so a spec matches the parameters of the effect it names.
+ */
+export type AttachEffectSpec<K extends AttachableEffect> = K extends AttachableEffect ? { readonly effect: K } & Omit<BuiltInEffects[K], 'target'> : never;
+
+/** Parameters of an attachable effect without `target` (per name when K is a union). */
+type AttachParams<K extends AttachableEffect> = K extends AttachableEffect ? Omit<BuiltInEffects[K], 'target'> : never;
 
 /** The API returned by `useGameFX`. */
 export interface GameFX {
@@ -45,8 +59,11 @@ export interface GameFX {
   play<K extends keyof BuiltInEffects>(name: K, params: BuiltInEffects[K], options?: PlayOptions): EffectHandle;
   /** Starts an effect from its definition (registered or not). */
   play<Params>(effect: EffectDefinition<Params>, params: Params, options?: PlayOptions): EffectHandle;
-  /** Starts a custom effect registered on the provider by name. Params are validated at runtime. */
-  play(name: string, params: unknown, options?: PlayOptions): EffectHandle;
+  /**
+   * Starts a custom effect registered on the provider by name. Its params are only validated at
+   * runtime; built-in names always use the typed overload above.
+   */
+  play<N extends string>(name: CustomEffectName<N>, params: unknown, options?: PlayOptions): EffectHandle;
   /**
    * Starts an effect that follows a target: the id of a mounted `<GameFXTarget>`, its handle
    * (`getTarget(id)`) or a scene node. The effect ends when cancelled, when it completes, or
@@ -54,20 +71,12 @@ export interface GameFX {
    * `fx.attach('card', 'fire-border', { intensity: 1 })` or
    * `fx.attach('card', { effect: 'fire-border', intensity: 1 })`.
    */
-  attach<K extends AttachableEffect>(
-    target: TargetRef,
-    name: K,
-    params?: Omit<BuiltInEffects[K], 'target'>,
-    options?: PlayOptions,
-  ): EffectHandle;
+  attach<K extends AttachableEffect>(target: TargetRef, name: K, params?: AttachParams<K>, options?: PlayOptions): EffectHandle;
   attach<K extends AttachableEffect>(target: TargetRef, spec: AttachEffectSpec<K>, options?: PlayOptions): EffectHandle;
-  attach<Params extends TargetParams>(
-    target: TargetRef,
-    effect: EffectDefinition<Params> | string,
-    params: Omit<Params, 'target'>,
-    options?: PlayOptions,
-  ): EffectHandle;
-  attach(target: TargetRef, spec: AttachSpec, options?: PlayOptions): EffectHandle;
+  attach<Params extends TargetParams>(target: TargetRef, effect: EffectDefinition<Params>, params: Omit<Params, 'target'>, options?: PlayOptions): EffectHandle;
+  /** A custom effect registered by name (params validated at runtime only). */
+  attach<N extends string>(target: TargetRef, effect: CustomEffectName<N>, params?: Readonly<Record<string, unknown>>, options?: PlayOptions): EffectHandle;
+  attach<N extends string>(target: TargetRef, spec: AttachSpec & { readonly effect: EffectDefinition<never> | CustomEffectName<N> }, options?: PlayOptions): EffectHandle;
   /**
    * A mounted `<GameFXTarget>`: its proxy node (for effects and coordinates) and its `motion`
    * (the transform binding: animate `x`, `y`, `rotation`, `scale`, `opacity` of the real view).
@@ -85,7 +94,9 @@ export interface GameFX {
   timeline(options?: PlayableOptions): Timeline;
   /** A timeline item that starts an effect when the playback reaches it (see `engine.cue`). */
   cue<K extends keyof BuiltInEffects>(name: K, params: CueParams<BuiltInEffects[K]>, options?: CueOptions): EffectCue<BuiltInEffects[K]>;
-  cue<Params>(effect: EffectDefinition<Params> | string, params: CueParams<Params>, options?: CueOptions): EffectCue<Params>;
+  cue<Params>(effect: EffectDefinition<Params>, params: CueParams<Params>, options?: CueOptions): EffectCue<Params>;
+  /** A custom effect registered by name (params validated at runtime only). */
+  cue<N extends string>(effect: CustomEffectName<N>, params: CueParams<Readonly<Record<string, unknown>>>, options?: CueOptions): EffectCue<Readonly<Record<string, unknown>>>;
   /** A ballistic throw of a target id or node, for timelines (markers `launch`, `peak`, `impact`). */
   throw(target: TargetRef, options?: ThrowOptions): ThrowMotion;
   /** Plays the reusable throw, impact, explosion, shake and settle sequence. */
@@ -116,13 +127,6 @@ export interface GameFX {
   readonly engine: Engine | null;
 }
 
-class NotReadyError extends Error {
-  constructor() {
-    super('GameFX is not ready yet. Call play() from an event handler or effect, not during the first render.');
-    this.name = 'NotReadyError';
-  }
-}
-
 function createApi(engine: Engine | null): GameFX {
   const requireEngine = (): Engine => {
     if (!engine) throw new NotReadyError();
@@ -150,8 +154,8 @@ function createApi(engine: Engine | null): GameFX {
       return eng.animate(animated, vars).play();
     },
     timeline: (options?: PlayableOptions) => requireEngine().timeline(options ?? {}),
-    cue: (effect: EffectDefinition<unknown> | string, params: CueParams<unknown>, options?: CueOptions) =>
-      requireEngine().cue(effect, params, options ?? {}),
+    cue: ((effect: EffectDefinition<unknown> | string, params: CueParams<unknown>, options?: CueOptions) =>
+      requireEngine().cue(effect, params, options ?? {})) as GameFX['cue'],
     throw: (target: TargetRef, options?: ThrowOptions) => requireEngine().motion.throw(target, options ?? {}),
     throwAndExplode: (target: TargetRef, options?: ThrowAndExplodeOptions) => throwAndExplode(requireEngine(), target, options ?? {}),
     fromWindow: (point) => {
@@ -169,7 +173,8 @@ function createApi(engine: Engine | null): GameFX {
       return engine?.activeCount ?? 0;
     },
     get quality() {
-      return engine?.quality.level ?? 'high';
+      // Before the engine exists, report the engine's default level.
+      return engine?.quality.level ?? DEFAULT_QUALITY;
     },
     setQuality: (quality) => {
       requireEngine().quality = quality;
