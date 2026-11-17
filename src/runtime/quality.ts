@@ -12,6 +12,11 @@ export interface QualityProfile {
   readonly particleScale: number;
   /** Runtime shaders (fire, energy). When false, effects use particle or solid fallbacks. */
   readonly shaders: boolean;
+  /**
+   * How much work each shader pixel may cost: `lite` (fewer noise octaves, no halo) or `full`.
+   * Optional for custom profiles; default `full`.
+   */
+  readonly shaderDetail?: 'lite' | 'full';
   /** Blur-based glows (offscreen layers). */
   readonly glow: boolean;
   /** Secondary details such as sparks, smoke and second shockwave rings. */
@@ -19,9 +24,9 @@ export interface QualityProfile {
 }
 
 export const QUALITY_PROFILES: Readonly<Record<QualityLevel, QualityProfile>> = {
-  low: { level: 'low', particleScale: 0.35, shaders: false, glow: false, details: false },
-  medium: { level: 'medium', particleScale: 0.65, shaders: true, glow: false, details: true },
-  high: { level: 'high', particleScale: 1, shaders: true, glow: true, details: true },
+  low: { level: 'low', particleScale: 0.35, shaders: true, shaderDetail: 'lite', glow: false, details: false },
+  medium: { level: 'medium', particleScale: 0.65, shaders: true, shaderDetail: 'full', glow: false, details: true },
+  high: { level: 'high', particleScale: 1, shaders: true, shaderDetail: 'full', glow: true, details: true },
 };
 
 export function resolveQuality(quality: QualityLevel | QualityProfile): QualityProfile {

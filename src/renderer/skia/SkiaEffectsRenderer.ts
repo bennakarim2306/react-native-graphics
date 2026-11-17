@@ -41,6 +41,9 @@ import type { SceneDrawable, SceneDrawItem, SceneGroupCommand } from '../../scen
 import { imageSize, shapeBounds } from '../../scene/shape';
 import type { NodeShape } from '../../scene/shape';
 
+/** Atlas sampling: bilinear with mipmaps, so image particles drawn small from a sheet do not shimmer. */
+const ATLAS_SAMPLING = { filter: FilterMode.Linear, mipmap: MipmapMode.Linear };
+
 /** The part of the Skia API the renderer uses. Injected so it can run against CanvasKit in tests. */
 export type SkiaFactory = Pick<
   typeof SkiaApi,
@@ -246,6 +249,9 @@ export class SkiaEffectsRenderer {
     const rgb = particles.red && particles.green && particles.blue ? particles : null;
     const aspect = particles.aspect ?? 1;
     const stretch = particles.stretch ?? 0.04;
+    // Halo pass for sparks and dots: a wide faint stroke or disc under a whiter core.
+    const glow = look === 'spark' || look === 'circle' ? Math.min(1, Math.max(0, particles.glow ?? 0)) : 0;
+    const whiten = glow * 0.4;
     const c = this.particleColor;
     for (let i = 0; i < particles.count; i++) {
       if (particles.alive[i] !== 1) continue;
@@ -257,14 +263,33 @@ export class SkiaEffectsRenderer {
         c[1] = rgb.green?.[i] ?? 1;
         c[2] = rgb.blue?.[i] ?? 1;
         c[3] = opacity;
-        p.setColor(c);
       } else {
         const color = this.color(particles.colors?.[particles.colorIndex?.[i] ?? 0] ?? '#FFFFFF');
-        p.setColor(color);
-        p.setAlphaf((color[3] ?? 1) * opacity);
+        c[0] = color[0] ?? 1;
+        c[1] = color[1] ?? 1;
+        c[2] = color[2] ?? 1;
+        c[3] = (color[3] ?? 1) * opacity;
       }
       const x = particles.x[i] ?? 0;
       const y = particles.y[i] ?? 0;
+      if (glow > 0) {
+        const alpha = c[3];
+        c[3] = alpha * 0.22 * glow;
+        p.setColor(c);
+        if (look === 'spark') {
+          const vx = particles.vx?.[i] ?? 0;
+          const vy = particles.vy?.[i] ?? 0;
+          p.setStrokeWidth(radius * 3.2);
+          canvas.drawLine(x, y, x - vx * stretch, y - vy * stretch, p);
+        } else {
+          canvas.drawCircle(x, y, radius * 2.2, p);
+        }
+        c[0] += (1 - c[0]) * whiten;
+        c[1] += (1 - c[1]) * whiten;
+        c[2] += (1 - c[2]) * whiten;
+        c[3] = alpha;
+      }
+      p.setColor(c);
       switch (look) {
         case 'square': {
           const rotation = particles.rotation?.[i] ?? 0;
@@ -339,7 +364,7 @@ export class SkiaEffectsRenderer {
     this.paint.setBlendMode(BLEND[particles.blendMode ?? 'normal']);
     const restore = particles.matrix ? canvas.save() : -1;
     if (particles.matrix) canvas.concat(toSkiaMatrix(particles.matrix));
-    canvas.drawAtlas(native, srcs, xforms, this.paint, SkBlendMode.Modulate, colors);
+    canvas.drawAtlas(native, srcs, xforms, this.paint, SkBlendMode.Modulate, colors, ATLAS_SAMPLING);
     if (restore >= 0) canvas.restoreToCount(restore);
     return srcs.length;
   }
@@ -478,7 +503,8 @@ export class SkiaEffectsRenderer {
       this.skia.XYWHRect(src.x, src.y, src.width, src.height),
       this.skia.XYWHRect(b.x, b.y, width, height),
       shape.smoothing === 'nearest' ? FilterMode.Nearest : FilterMode.Linear,
-      MipmapMode.None,
+      // Mipmaps keep downscaled images (small sprites from large sheets) free of shimmer.
+      shape.smoothing === 'nearest' ? MipmapMode.None : MipmapMode.Linear,
       this.paint,
     );
     return true;

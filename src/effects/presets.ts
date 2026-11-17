@@ -1,3 +1,4 @@
+import { withAlpha } from '../graphics/color';
 import { validateFill } from '../graphics/paint';
 import type { Color } from '../graphics/paint';
 import type { ImageAsset } from '../assets/assets';
@@ -6,6 +7,7 @@ import type { EmitterConfig } from '../particles/emitter';
 import { contextQuality, defineEffect } from '../runtime/effect';
 import type { Drawable, EffectDefinition } from '../runtime/effect';
 import { InvalidOptionError } from '../runtime/errors';
+import type { QualityProfile } from '../runtime/quality';
 import { composeTransform } from '../scene/matrix';
 import type { Point } from '../scene/matrix';
 import { defineComposite } from './composite';
@@ -13,7 +15,7 @@ import type { CompositeLayer } from './composite';
 import { checkNumber, Placement, shapeDrawable } from './placement';
 import type { PlacementParams } from './placement';
 import { flash, particles, ParticlesInstance, screenShake, shockwave } from './primitives';
-import type { ParticlesParams, ScreenShakeParams } from './primitives';
+import type { FlashParams, ParticlesParams, ScreenShakeParams, ShockwaveParams } from './primitives';
 
 const placementOf = (p: PlacementParams): PlacementParams => ({
   ...(p.position ? { position: p.position } : {}),
@@ -30,11 +32,11 @@ function colorsOf(colors: readonly string[] | undefined, fallback: readonly stri
   return list;
 }
 
-/** A preset that is one configured emitter. */
-function emitterPreset<P extends PlacementParams>(name: string, build: (params: P) => EmitterConfig): EffectDefinition<P> {
+/** A preset that is one configured emitter (`build` may read the quality profile). */
+function emitterPreset<P extends PlacementParams>(name: string, build: (params: P, quality: QualityProfile) => EmitterConfig): EffectDefinition<P> {
   return defineEffect<P>({
     name,
-    create: (params, context) => new ParticlesInstance({ ...build(params), ...placementOf(params) }, context, name),
+    create: (params, context) => new ParticlesInstance({ ...build(params, contextQuality(context)), ...placementOf(params) }, context, name),
   });
 }
 
@@ -70,18 +72,20 @@ export const confetti: EffectDefinition<ConfettiParams> = emitterPreset<Confetti
     maxParticles: Math.min(5000, Math.round(count)),
     direction: p.direction ?? -90,
     spread: p.spread ?? 70,
-    speed: { min: 260 * power, max: 620 * power },
+    speed: { min: 220 * power, max: 640 * power },
     gravity: 520,
-    drag: 1.6,
-    lifetime: { min: duration * 0.7, max: duration },
-    size: { min: size * 0.7, max: size * 1.3 },
-    aspect: 0.5,
+    // Paper is light: strong air drag makes pieces stall at the top and drift down slowly.
+    drag: 1.9,
+    lifetime: { min: duration * 0.65, max: duration },
+    size: { min: size * 0.6, max: size * 1.4 },
+    aspect: 0.55,
     look: 'square',
     rotation: { min: 0, max: 360 },
-    angularVelocity: { min: -540, max: 540 },
-    // Pieces flutter: the scale curve squashes them as if they were flipping.
-    scale: [1, 0.35, 1, 0.35, 1, 0.35, 1],
-    opacity: [1, 1, 1, 1, 0],
+    angularVelocity: { min: -420, max: 420 },
+    // Pieces flutter: the scale curve squashes them as if they were flipping over, faster at
+    // the start (launch) than at the end (floating).
+    scale: [1, 0.2, 1, 0.25, 1, 0.3, 1, 0.4, 1],
+    opacity: [1, 1, 1, 1, 0.85, 0],
     colors: colorsOf(p.colors, CONFETTI_COLORS, n),
   };
 });
@@ -105,7 +109,7 @@ export interface GoldenSparksParams extends PlacementParams {
 export const GOLD_COLORS: readonly string[] = ['#FFF6D5', '#FFE082', '#FFD54A', '#FFB300'];
 
 /** Bright additive streaks that arc under gravity, with a few glittering embers. */
-export const goldenSparks: EffectDefinition<GoldenSparksParams> = emitterPreset<GoldenSparksParams>('golden-sparks', (p) => {
+export const goldenSparks: EffectDefinition<GoldenSparksParams> = emitterPreset<GoldenSparksParams>('golden-sparks', (p, quality) => {
   const n = 'golden-sparks';
   const count = checkNumber(p.count ?? 60, 'count', n, { min: 0, max: 2000 });
   const power = checkNumber(p.power ?? 1, 'power', n, { min: 0, max: 10 });
@@ -120,11 +124,13 @@ export const goldenSparks: EffectDefinition<GoldenSparksParams> = emitterPreset<
     speed: { min: 120 * power, max: 420 * power },
     gravity: 380,
     drag: 1.2,
-    lifetime: { min: 350, max: 900 },
-    size: { min: 1.2, max: 2.6 },
+    lifetime: { min: 350, max: 950 },
+    size: { min: 0.9, max: 2.4 },
     look: 'spark',
     stretch: 0.045,
     blendMode: 'plus',
+    // A white-hot halo on high quality; colors stay the caller's palette.
+    glow: quality.glow ? 0.7 : 0,
     opacity: { from: 1, to: 0, easing: 'easeInQuad' },
     colors: colorsOf(p.colors, GOLD_COLORS, n),
   };
@@ -133,7 +139,7 @@ export const goldenSparks: EffectDefinition<GoldenSparksParams> = emitterPreset<
 // --- smoke ----------------------------------------------------------------------------------
 
 export interface SmokeParams extends PlacementParams {
-  /** Puffs per second. Default 14. */
+  /** Puffs per second. Default 16. */
   readonly rate?: number;
   /** One-off puffs at the start. Default 0. */
   readonly burst?: number;
@@ -151,19 +157,26 @@ export interface SmokeParams extends PlacementParams {
   readonly lifetime?: number;
   /** Emission area radius. Default 6. */
   readonly radius?: number;
+  /** Peak opacity of a puff, 0 to 1. Default 0.32. */
+  readonly opacity?: number;
 }
 
-export const SMOKE_COLORS: readonly string[] = ['#9E9E9E', '#BDBDBD', '#757575'];
+export const SMOKE_COLORS: readonly string[] = ['#8E8A86', '#A7A29C', '#76726E', '#B8B2AA'];
 
-/** Soft puffs that rise, grow, drift and fade. Emits until stopped unless `duration` is set. */
+/**
+ * Soft puffs that rise, billow (grow quickly, then slowly), drift, turn and thin out. Many
+ * faint overlapping puffs of slightly different greys read as volume rather than a disc.
+ * Emits until stopped unless `duration` is set.
+ */
 export const smoke: EffectDefinition<SmokeParams> = emitterPreset<SmokeParams>('smoke', (p) => {
   const n = 'smoke';
-  const rate = checkNumber(p.rate ?? 14, 'rate', n, { min: 0, max: 500 });
+  const rate = checkNumber(p.rate ?? 16, 'rate', n, { min: 0, max: 500 });
   const burst = checkNumber(p.burst ?? 0, 'burst', n, { min: 0, max: 500 });
   const size = checkNumber(p.size ?? 14, 'size', n, { min: 1, max: 300 });
   const rise = checkNumber(p.rise ?? 1, 'rise', n, { min: 0, max: 10 });
   const lifetime = checkNumber(p.lifetime ?? 2200, 'lifetime', n, { min: 100 });
   const radius = checkNumber(p.radius ?? 6, 'radius', n, { min: 0 });
+  const peak = checkNumber(p.opacity ?? 0.32, 'opacity', n, { min: 0, max: 1 });
   return {
     rate,
     bursts: burst > 0 ? [{ count: Math.round(burst) }] : [],
@@ -171,16 +184,16 @@ export const smoke: EffectDefinition<SmokeParams> = emitterPreset<SmokeParams>('
     maxParticles: 400,
     shape: { type: 'circle', radius },
     direction: -90,
-    spread: 40,
-    speed: { min: 18 * rise, max: 46 * rise },
-    gravity: { x: checkNumber(p.wind ?? 8, 'wind', n), y: -10 * rise },
-    drag: 0.4,
-    lifetime: { min: lifetime * 0.7, max: lifetime },
-    size: { min: size * 0.7, max: size * 1.2 },
-    scale: { from: 0.6, to: 2.4, easing: 'easeOutQuad' },
-    opacity: [0, 0.55, 0.4, 0],
+    spread: 36,
+    speed: { min: 22 * rise, max: 52 * rise },
+    gravity: { x: checkNumber(p.wind ?? 8, 'wind', n), y: -16 * rise },
+    drag: 0.25,
+    lifetime: { min: lifetime * 0.65, max: lifetime },
+    size: { min: size * 0.55, max: size * 1.25 },
+    scale: { from: 0.4, to: 2.3, easing: 'easeOutCubic' },
+    opacity: [0, peak, peak * 0.72, peak * 0.33, 0],
     rotation: { min: 0, max: 360 },
-    angularVelocity: { min: -30, max: 30 },
+    angularVelocity: { min: -40, max: 40 },
     look: 'soft',
     colors: colorsOf(p.colors, SMOKE_COLORS, n),
   };
@@ -302,8 +315,9 @@ export const glowPulse: EffectDefinition<GlowPulseParams> = defineEffect<GlowPul
         const sy = placement.node ? Math.hypot(m[2], m[3]) : 1;
         const rotation = (Math.atan2(m[1], m[0]) * 180) / Math.PI;
         const phase = (elapsed % period) / period;
-        const grow = expand * phase;
-        const fade = (1 - phase) * intensity * placement.opacity;
+        // Ease out: the light swells quickly and fades softly.
+        const grow = expand * (1 - (1 - phase) ** 2);
+        const fade = (1 - phase) ** 1.5 * intensity * placement.opacity;
         const w = size.width * sx + padding * 2 + grow * 2;
         const h = size.height * sy + padding * 2 + grow * 2;
         const matrix = composeTransform(m[4], m[5], rotation, 1, 1);
@@ -366,16 +380,36 @@ export interface ExplosionParams extends PlacementParams {
   readonly smoke?: boolean;
   /** Tumbling fragments: true for squares, or an image (sprite-sheet frames). Default false. */
   readonly debris?: boolean | { readonly image: ImageAsset; readonly frames?: readonly Rect[] };
+  /**
+   * Strength of the light: the wide bloom and, on high quality, the halos of sparks and
+   * embers. 0 to 2. Default 1.
+   */
+  readonly glow?: number;
   /** Shake the overlay (true) or given scopes. Default false. */
   readonly screenShake?: boolean | Omit<ScreenShakeParams, 'intensity'>;
 }
 
 export const EXPLOSION_COLORS: readonly string[] = ['#FFF8E1', '#FFD54A', '#FF9100', '#FF3D00', '#B71C1C'];
 
+const transparent = (color: string) => withAlpha(color, 0);
+
 /**
- * An explosion built from reusable primitives: a flash, a shockwave, a burst of sparks and
- * embers, smoke, optional debris and an optional screen shake, all on one clock and one
- * handle. Each part can be turned off; quality profiles drop the secondary parts.
+ * A layered explosion built from reusable primitives, all on one clock and one handle:
+ *
+ * | layer | starts | lasts | what |
+ * | --- | --- | --- | --- |
+ * | smoke | 120 ms | ~2.4 s | grey puffs rising from the blast, under everything (normal blend) |
+ * | bloom | 0 | 320 ms | a wide, faint warm light |
+ * | fireball | 0 | ~0.8 s | hot puffs that burst outward, stall (drag) and cool white → orange → red |
+ * | flash | 0 | 160 ms | a small white-hot core |
+ * | shockwave | 30 ms | 480 ms | a thin bright front over a faint band, decelerating |
+ * | sparks | 0 | ~0.9 s | white-hot streaks that cool to red, slowed by drag and pulled down |
+ * | embers | 60 ms | ~1.6 s | small glowing dots that drift and float up |
+ * | debris | 0 | ~1.2 s | glowing chunks that cool to charcoal, tumble and fall (on top: depth) |
+ * | shake | 0 | 420 ms | optional |
+ *
+ * Quality profiles keep every layer's timing and drop or thin the secondary ones: `low` has no
+ * smoke or embers and thinner counts; spark halos only on `high`. Colors run hot to cool.
  */
 export const explosion: EffectDefinition<ExplosionParams> = defineComposite<ExplosionParams>({
   name: 'explosion',
@@ -385,85 +419,152 @@ export const explosion: EffectDefinition<ExplosionParams> = defineComposite<Expl
     const count = checkNumber(p.particles ?? 150, 'particles', n, { min: 0, max: 2000 });
     const radius = checkNumber(p.radius ?? 120, 'radius', n, { min: 1 }) * Math.sqrt(intensity);
     const colors = colorsOf(p.colors, EXPLOSION_COLORS, n);
-    const details = contextQuality(context).details;
+    const glow = checkNumber(p.glow ?? 1, 'glow', n, { min: 0, max: 2 });
+    const quality = contextQuality(context);
+    const details = quality.details;
+    const halo = (base: number) => (quality.glow ? Math.min(1, base * glow) : 0);
     const where = { ...placementOf(p), follow: p.follow ?? false };
+    const hot = colors[0] ?? '#FFF8E1';
+    const yellow = colors[1] ?? hot;
+    const orange = colors[2] ?? yellow;
+    const red = colors[3] ?? orange;
+    const dark = colors[4] ?? red;
     const speed = radius * 3.2;
     const layers: CompositeLayer[] = [];
     if (p.smoke !== false && details) {
       layers.push({
         name: 'smoke',
         effect: smoke,
-        delay: 80,
-        params: { ...where, rate: 0, burst: Math.round(14 * intensity), size: radius * 0.22, radius: radius * 0.25, lifetime: 1800, rise: 1.4, duration: 0 } satisfies SmokeParams,
+        delay: 120,
+        params: {
+          ...where,
+          rate: 0,
+          burst: Math.round(11 * intensity),
+          size: radius * 0.13,
+          radius: radius * 0.3,
+          lifetime: 2200,
+          rise: 1.9,
+          opacity: 0.3,
+          duration: 0,
+          colors: ['#6F6660', '#857C74', '#5C5652', '#9A928A'],
+        } satisfies SmokeParams,
+      });
+    }
+    if (p.flash !== false && glow > 0) {
+      layers.push({ name: 'bloom', effect: flash, params: { ...where, radius: radius * 1.5, color: orange, duration: 320, intensity: Math.min(1, 0.32 * glow) } satisfies FlashParams });
+    }
+    // The fireball is the explosion's body: drawn whenever sparks or the flash are on.
+    if (p.sparks !== false || p.flash !== false) {
+      const puffs = Math.max(4, Math.round(26 * intensity));
+      layers.push({
+        name: 'fireball',
+        effect: particles,
+        params: {
+          ...where,
+          bursts: [{ count: puffs }],
+          maxParticles: puffs,
+          shape: { type: 'circle', radius: radius * 0.08 },
+          directionMode: 'radial',
+          speed: { min: radius * 0.9, max: radius * 2.8 },
+          drag: 4.2,
+          gravity: -radius * 0.3,
+          lifetime: { min: 380, max: 780 },
+          size: { min: radius * 0.09, max: radius * 0.19 },
+          scale: { from: 0.6, to: 1.6, easing: 'easeOutCubic' },
+          opacity: [0.75, 0.6, 0.4, 0],
+          look: 'soft',
+          blendMode: 'plus',
+          colorOverLife: [hot, yellow, orange, red, transparent(dark)],
+        } satisfies ParticlesParams,
       });
     }
     if (p.flash !== false) {
-      layers.push({ name: 'flash', effect: flash, params: { ...where, radius: radius * 1.1, color: colors[1] ?? '#FFD54A', duration: 240 } });
+      layers.push({ name: 'flash', effect: flash, params: { ...where, radius: radius * 0.7, color: yellow, duration: 160 } satisfies FlashParams });
     }
     if (p.shockwave !== false) {
-      layers.push({ name: 'shockwave', effect: shockwave, params: { ...where, radius: radius * 1.5, color: colors[0] ?? '#FFF8E1', duration: 560, width: 8 * Math.sqrt(intensity) } });
+      layers.push({
+        name: 'shockwave',
+        effect: shockwave,
+        delay: 30,
+        params: { ...where, radius: radius * 1.05, color: yellow, duration: 460, width: 5 * Math.sqrt(intensity), intensity: 0.75, echoes: 0 } satisfies ShockwaveParams,
+      });
     }
     if (p.sparks !== false) {
+      const sparks = Math.round(count * intensity);
       layers.push({
         name: 'sparks',
         effect: particles,
         params: {
           ...where,
-          bursts: [{ count: Math.round(count * intensity) }],
-          maxParticles: Math.min(5000, Math.max(1, Math.round(count * intensity))),
-          speed: { min: speed * 0.25, max: speed },
-          drag: 2.2,
-          gravity: 260,
-          lifetime: { min: 380, max: 900 },
-          size: { min: 1.4, max: 3 },
+          bursts: [{ count: sparks }],
+          maxParticles: Math.min(5000, Math.max(1, sparks)),
+          shape: { type: 'circle', radius: radius * 0.06 },
+          directionMode: 'radial',
+          speed: { min: speed * 0.2, max: speed },
+          drag: 2.6,
+          gravity: 320,
+          lifetime: { min: 320, max: 950 },
+          size: { min: 0.9, max: 2.4 },
           look: 'spark',
-          stretch: 0.05,
+          stretch: 0.04,
           blendMode: 'plus',
-          colors,
+          glow: halo(0.8),
+          opacity: [1, 1, 0.85, 0],
+          colorOverLife: ['#FFFFFF', hot, yellow, orange, red, transparent(dark)],
         } satisfies ParticlesParams,
       });
       if (details) {
+        const embers = Math.round(count * 0.3 * intensity);
         layers.push({
           name: 'embers',
           effect: particles,
+          delay: 60,
           params: {
             ...where,
-            bursts: [{ count: Math.round(count * 0.35 * intensity) }],
-            maxParticles: Math.min(5000, Math.max(1, Math.round(count * 0.35 * intensity))),
-            shape: { type: 'circle', radius: radius * 0.15 },
-            speed: { min: speed * 0.1, max: speed * 0.45 },
-            drag: 1.5,
-            gravity: -40,
-            lifetime: { min: 500, max: 1300 },
-            size: { min: 2.5, max: 6 },
-            scale: { from: 1, to: 0.2 },
-            look: 'soft',
+            bursts: [{ count: embers }],
+            maxParticles: Math.min(5000, Math.max(1, embers)),
+            shape: { type: 'circle', radius: radius * 0.25 },
+            directionMode: 'radial',
+            speed: { min: speed * 0.06, max: speed * 0.3 },
+            drag: 1.4,
+            gravity: -60,
+            lifetime: { min: 700, max: 1600 },
+            size: { min: 1.2, max: 3 },
+            scale: { from: 1, to: 0.3 },
+            opacity: [0, 1, 0.9, 0.6, 0],
+            look: 'circle',
             blendMode: 'plus',
-            colorOverLife: [colors[0] ?? '#FFF8E1', colors[2] ?? '#FF9100', `${(colors[4] ?? '#B71C1C').slice(0, 7)}00`],
+            glow: halo(0.6),
+            colorOverLife: [yellow, orange, red, transparent(dark)],
           } satisfies ParticlesParams,
         });
       }
     }
     if (p.debris) {
       const image = typeof p.debris === 'object' ? p.debris : null;
+      const chunks = Math.round(14 * intensity);
       layers.push({
         name: 'debris',
         effect: particles,
         params: {
           ...where,
-          bursts: [{ count: Math.round(14 * intensity) }],
-          maxParticles: 64,
+          bursts: [{ count: chunks }],
+          maxParticles: Math.max(1, chunks),
+          shape: { type: 'circle', radius: radius * 0.1 },
           direction: -90,
-          spread: 220,
-          speed: { min: speed * 0.3, max: speed * 0.7 },
-          gravity: 900,
-          lifetime: { min: 700, max: 1200 },
-          size: { min: 3, max: 7 },
+          spread: 230,
+          speed: { min: speed * 0.25, max: speed * 0.65 },
+          drag: 0.9,
+          gravity: 950,
+          lifetime: { min: 750, max: 1250 },
+          size: { min: 2, max: 6 },
+          aspect: 0.7,
           rotation: { min: 0, max: 360 },
-          angularVelocity: { min: -720, max: 720 },
+          angularVelocity: { min: -900, max: 900 },
           opacity: [1, 1, 1, 0],
           look: image ? { type: 'image', image: image.image, ...(image.frames ? { frames: image.frames } : {}) } : 'square',
-          colors: ['#5D4037', '#424242', '#8D6E63'],
+          // Chunks leave the blast glowing and cool to charcoal as they fall.
+          ...(image ? {} : { colorOverLife: ['#FFD08A', '#E0782C', '#6B3A22', '#2E2724', '#2A2522'] }),
         } satisfies ParticlesParams,
       });
     }
@@ -505,8 +606,9 @@ export const victory: EffectDefinition<VictoryParams> = defineComposite<VictoryP
     const centre = new Placement(placementOf(p), context, n).position();
     const at = (dx: number): PlacementParams => ({ position: { x: centre.x + dx, y: centre.y } satisfies Point });
     const layers: CompositeLayer[] = [
+      { name: 'bloom', effect: flash, params: { ...at(0), radius: width * 0.4, color: '#FFD54A', duration: 360, intensity: 0.45 } satisfies FlashParams },
       { name: 'sparks', effect: goldenSparks, params: { ...at(0), count: Math.round(70 * intensity), power: 1.1 } satisfies GoldenSparksParams },
-      { name: 'ring', effect: shockwave, params: { ...at(0), radius: width * 0.45, color: '#FFE082' } },
+      { name: 'ring', effect: shockwave, params: { ...at(0), radius: width * 0.45, color: '#FFE082', width: 6 } satisfies ShockwaveParams },
       { name: 'confetti-left', delay: 120, effect: confetti, params: { ...at(-width / 2), direction: -60, spread: 40, count: Math.round(70 * intensity), colors } satisfies ConfettiParams },
       { name: 'confetti-right', delay: 120, effect: confetti, params: { ...at(width / 2), direction: -120, spread: 40, count: Math.round(70 * intensity), colors } satisfies ConfettiParams },
       { name: 'confetti-centre', delay: 420, effect: confetti, params: { ...at(0), spread: 50, power: 1.2, count: Math.round(80 * intensity), colors } satisfies ConfettiParams },

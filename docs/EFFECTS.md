@@ -1,4 +1,4 @@
-# Effects guide (Phase 4)
+# Effects guide (Phase 4, visual quality revised in Phase 4.5)
 
 How to play, attach, combine and write effects; how particles and shaders work; and how effects follow ordinary React Native views. Every example uses the public `react-native-graphics` entry point and matches the implementation and its tests. The full type reference is in [API.md](API.md).
 
@@ -60,17 +60,17 @@ Fifteen effects are registered by default. Numbers are points, ms or degrees. "T
 
 | Effect | What it is | Main parameters (defaults) | Updates |
 | --- | --- | --- | --- |
-| `fire-border` | Flames along a target's border | `intensity` 0.8 (0–2), `flameHeight` 24, `color` `#FF6A00`, `glow` true, `sparks` true, `shape` `rounded-rect` (`rect`, `ellipse`, or a `PathData`), `cornerRadius` 12, `padding` 2, `mode` `auto`/`shader`/`particles`, `duration` (until stopped), `heatHaze` false. Target required | `intensity`, `flameHeight`, `color`, `glow`, `sparks` |
-| `explosion` | Composite of flash, shockwave, sparks, embers, smoke, optional debris and shake | `intensity` 1 (0.1–3), `particles` 150, `radius` 120, `colors`, `flash`/`shockwave`/`sparks`/`smoke` true, `debris` false (true or `{ image, frames }`), `screenShake` false (true or shake params) | `intensity` |
+| `fire-border` | Flames rising from a target's border (they rise on screen and turn with the target) | `intensity` 0.8 (0–2), `flameHeight` 24, `color` `#FF6A00`, `coreColor` and `tipColor` (derived from `color`), `speed` 1 (0.1–4), `glow` true, `glowStrength` 1 (0–2; not drawn on `low`), `sparks` true, `sparkDensity` 1 (0–3), `shape` `rounded-rect` (`rect`, `ellipse`, or a `PathData`), `cornerRadius` 12, `padding` 2, `mode` `auto`/`shader`/`particles`, `duration` (until stopped), `heatHaze` false. Target required | `intensity`, `flameHeight`, `color`, `coreColor`, `tipColor`, `speed`, `glow`, `glowStrength`, `sparks`, `sparkDensity` |
+| `explosion` | Layered composite: bloom, fireball, flash, shockwave, sparks, embers, smoke, optional debris and shake | `intensity` 1 (0.1–3), `particles` 150, `radius` 120, `colors`, `flash`/`shockwave`/`sparks`/`smoke` true, `debris` false (true or `{ image, frames }`), `glow` 1 (0–2: bloom and spark halos; halos on `high` only), `screenShake` false (true or shake params) | `intensity` |
 | `confetti` | Burst of tumbling strips | `count` 120, `direction` −90, `spread` 70, `power` 1, `duration` 2600, `colors`, `size` 5 | `intensity` |
-| `golden-sparks` | Additive streak sparks, burst and/or continuous | `count` 60, `rate` 0, `duration` (until stopped when `rate` > 0), `power` 1, `direction`, `spread`, `colors` | `intensity`, `rate` |
-| `smoke` | Rising, drifting soft puffs | `rate` 14, `burst` 0, `duration` (until stopped), `size` 14, `wind` 8, `rise` 1, `lifetime` 2200, `radius` 6, `colors` | `intensity`, `rate` |
+| `golden-sparks` | Additive streak sparks, burst and/or continuous (with a soft halo on `high`) | `count` 60, `rate` 0, `duration` (until stopped when `rate` > 0), `power` 1, `direction`, `spread`, `colors` | `intensity`, `rate` |
+| `smoke` | Rising, spreading, thinning soft puffs | `rate` 16, `burst` 0, `duration` (until stopped), `size` 14, `wind` 8, `rise` 1, `lifetime` 2200, `radius` 6, `colors`, `opacity` 0.32 (peak) | `intensity`, `rate` |
 | `trail` | World-space particles left behind a moving target | `rate` 70, `size` 5, `lifetime` 500, `colors`, `look` `soft`/`circle`/`spark`, `additive` true | `intensity`, `rate` |
 | `glow-pulse` | Pulsing glow ring around a target | `color` `#FFD54A`, `frequency` 1.2, `pulses` Infinity, `radius` 14, `expand` 10, `padding` 4, `shape` `rect`/`circle`, `intensity` 1, `size` 60 (without target) | `intensity` |
-| `shockwave` | Expanding ring(s) | `radius` 140, `width` 10, `duration` 520, `echoes` 1, `color`, `intensity` 1 | `intensity` |
+| `shockwave` | Expanding ring(s): a thin bright edge over a faint wide band, decelerating and thinning | `radius` 140, `width` 10, `duration` 520, `echoes` 1 (with detail quality), `color`, `intensity` 1 | `intensity` |
 | `flash` | Short radial light | `radius` 90, `duration` 220, `color`, `intensity` 1 | `intensity` |
 | `screen-shake` | Shakes the overlay and/or host views | `scope` `overlay` (or target ids/nodes, or a list), `amplitude` 8, `rotation` 0, `duration` 400, `frequency` 28, `intensity` 1 | `intensity` |
-| `victory` | Composite: confetti cannons at both edges and a centre burst, two waves of golden sparks, a shockwave ring and a glow pulse | `width` 280, `intensity` 1, `colors`, `glow` true | `intensity` |
+| `victory` | Composite: a soft bloom, confetti cannons at both edges and a centre burst, two waves of golden sparks, a shockwave ring and a glow pulse | `width` 280, `intensity` 1, `colors`, `glow` true | `intensity` |
 | `particles` | The generic emitter (section 3) as an effect | every `EmitterConfig` field, plus `intensity` (multiplies the rate) | `intensity` and every `EmitterUpdate` key (section 3) |
 | `particle-burst` | The Phase 1 one-shot burst | `count`, `duration`, `colors`, `speed`, `gravity`… | – |
 | `glow-border`, `energy-border` | Phase 3 outline effects | see [API.md](API.md) | – |
@@ -107,7 +107,7 @@ fx.play('particles', {
 | Direction | `direction` (degrees, −90 = up), `spread`, `directionMode`: `fixed`, `normal` (outward from the shape, for borders) or `radial` |
 | Motion | `speed`, `gravity` (number = down, or a vector), `drag` (exponential), `inheritVelocity` (world space) |
 | Life | `lifetime` |
-| Appearance | `size`, `scale` (curve), `opacity` (curve), `rotation`, `angularVelocity`, `alignToVelocity`, `colors` (palette, one per particle) or `colorOverLife`, `look` (`circle`, `square` with `aspect`, `spark` with `stretch`, `ring`, `soft`, or `{ type: 'image', image, frames, frameMode }` for sprite-sheet particles), `blendMode` |
+| Appearance | `size`, `scale` (curve), `opacity` (curve), `rotation`, `angularVelocity`, `alignToVelocity`, `colors` (palette, one per particle) or `colorOverLife`, `look` (`circle`, `square` with `aspect`, `spark` with `stretch`, `ring`, `soft`, or `{ type: 'image', image, frames, frameMode }` for sprite-sheet particles), `blendMode`, `glow` (0–1, Phase 4.5: a wide faint pass under `spark` and `circle` particles plus a whiter core; about 5× the CPU raster cost of a plain spark in the render benchmark, so presets use it on `high` only) |
 
 `Spread` values are a number or `{ min, max }`. Curves (`ValueCurve`) are a constant, `{ from, to, easing }` or an array of evenly spaced keys.
 
@@ -162,7 +162,9 @@ const plasma = composeShader({
 engine.scene.createNode({ shape: { type: 'rect', width: 100, height: 100, fill: { type: 'shader', shader: plasma } } });
 ```
 
-Built on the primitives: `flameBorderShader` (the fire border) and `displacementShader` (heat haze, used by the `distort` node effect). Phase 3's `energyShader` and `fireShader` remain.
+Built on the primitives: `flameBorderShader` (the fire border: rising tongues, buoyant licks and its own halo), `flameBorderLiteShader` (the same flames with two noise octaves and no halo, used on `low`) and `displacementShader` (heat haze, used by the `distort` node effect). Phase 3's `energyShader` and `fireShader` remain. `fbm2` is a two-octave `fbm` for cheaper shaders.
+
+**How the fire border is drawn (Phase 4.5).** One shader rectangle per border, anchored to the target, covers the target plus a margin for the flames. Per pixel it takes the signed distance to the target's outline and the screen "up" direction in the target's own coordinates (`up`, updated from the target's rotation), so flames are tall above the target, short below it and lean on the sides, and keep rising on screen while the target turns. Tongues are fractal noise stretched along the outline and scrolled outward; a second, faster noise adds licks; a slow noise varies the height along the border; and a small breathing term varies the whole fire. Colors run from `tipColor` (dark red, transparent) through `color` to `coreColor` (near white) at the base. The halo is part of the same shader (no offscreen blur layer), and the card itself is never covered by it. Sparks are a separate world-space emitter, so they stay behind when the target moves.
 
 | Concern | How it works |
 | --- | --- |
@@ -190,7 +192,7 @@ await playback.finished;
 
 Cue options: `hold` (how long the cue occupies the timeline so later items wait for the effect), `detached` (keep the effect when the playback is cancelled), `playWhenSkipped` (still play it when `finish()` jumps over it), plus `PlayOptions`.
 
-`fx.throw(target, options)` is an analytical ballistic motion (not a physics engine): launch upwards, slow down to the `peak`, accelerate down to the landing point (`impact`). Options: `height` (200), `distance` (0), `drop` (0), `duration` (1000) **or** `gravity`, `rotation` (360), `restoreOnCancel` (true). It is a pure function of time, so it seeks, pauses and is frame-rate independent.
+`fx.throw(target, options)` is an analytical ballistic motion (not a physics engine): launch upwards, slow down to the `peak`, accelerate down to the landing point (`impact`). Options: `height` (200), `distance` (0), `drop` (0), `duration` (1000) **or** `gravity`, `rotation` (360), `scale` (1: the scale at the peak, a depth cue that returns to 1 at the landing; needs a scalable target), `restoreOnCancel` (true). It is a pure function of time, so it seeks, pauses and is frame-rate independent, and the landing point is exact (no randomness).
 
 **Throw & Explode** packages the whole sequence as a reusable function:
 
@@ -201,13 +203,18 @@ const seq = fx.throwAndExplode('card', {
   shake: { amplitude: 9, duration: 380 },                       // false: none
   afterImpact: 'return',                                        // 'stay' | 'return' | 'vanish'
   settleDelay: 700, returnDuration: 450,
+  trail: true,              // optional trail during the flight (or trail parameters); default false
+  punch: 0.06,              // squash at the impact and spring back in 220 ms; 0 turns it off
+  explodeAt: 'contact',     // 'contact' (default): the lowest point of the object at the impact; 'center'
+  quality: 'high',          // profile of the explosion, shake and trail; default the engine's
 });
 seq.playback.onMarker('impact', () => {});
 seq.playback.cancel();   // or finish(), pause(), resume()
 ```
 
-Order of events: launch → rotate while rising → `peak` → faster fall → `impact` → explosion (flash, shockwave, sparks, embers, smoke) and shake at the impact point, at the same frame → settle delay → return to the start (or fade back in for `vanish`). Guarantees, each covered by tests:
-- Cancelling at any moment restores the view's transform and opacity **synchronously** (a replay started right after `cancel()` starts from the real resting state) and cancels the sequence's own explosion and shake.
+The flight defaults to `throw.scale` 1.08 (slightly larger at the peak). Order of events: launch (trail starts) → rotate while rising → `peak` → faster fall → `impact` (trail stops emitting) → at the same frame: the explosion at the contact point (bloom, fireball, flash, shockwave, sparks, embers, debris, smoke), the shake and the impact punch → settle delay → return to the start (or fade back in for `vanish`). Guarantees, each covered by tests:
+- Cancelling at any moment restores the view's transform (position, rotation, scale) and opacity **synchronously** (a replay started right after `cancel()` starts from the real resting state) and cancels the sequence's own explosion, shake and trail.
+- The impact effects use the requested `quality`; the flight and the impact moment are identical on every profile.
 - `finish()` jumps to the end state without playing the explosion.
 - If the target unmounts mid-flight, the sequence cancels itself and starts nothing for the missing view.
 - After a completed sequence, particles that are already flying finish on their own; nothing else is left running.
@@ -274,18 +281,20 @@ World-space particles (fire sparks, `trail`, `smoke`, `golden-sparks`, explosion
 
 ## 8. Quality, reduced motion and capabilities
 
-| Level | Particle scale | Runtime shaders | Glow | Details (sparks, second rings, smoke in small effects) |
-| --- | --- | --- | --- | --- |
-| `low` | 0.35 | off (particle fallbacks) | off | off |
-| `medium` | 0.65 | on | off | on |
-| `high` (default) | 1 | on | on | on |
+| Level | Particle scale | Runtime shaders | Shader detail | Glow (halos, bloom) | Details (embers, smoke, second rings) |
+| --- | --- | --- | --- | --- | --- |
+| `low` | 0.35 | on | `lite` (fire: 2 noise octaves, no halo) | off | off |
+| `medium` (default) | 0.65 | on | `full` | off | on |
+| `high` | 1 | on | `full` | on | on |
+
+The fire border's halo is part of its shader, so it is drawn on `medium` and `high` (not on `low`); "Glow" in the table means blur passes, spark halos and blooms. Every profile has the same timing: an explosion, a throw or a fire looks lighter on `low`, never shorter or later. The default is `medium` (it was `high` until Phase 4.5): the most expensive profile is opt-in. A custom `QualityProfile` with `shaders: false` turns the fire border into CPU particle flames.
 
 - Provider prop `quality`, or `fx.setQuality(level)` at runtime; per effect with `PlayOptions.quality`. A level applies to effects started afterwards.
 - `adaptiveQuality` (provider prop): the engine averages frame times over windows (default 30 frames) and steps down above 22 ms or up below 14 ms, within `min`/`max`.
 - `reducedMotion` (provider prop, default `'system'` = the OS setting via `AccessibilityInfo`, updated live; or `true`/`false`): screen shakes do nothing, flashes are dimmed to 40 %, and the generic particle effects emit half as many particles. Motions you start yourself (throws, tweens) are not changed: read `fx.reducedMotion` and choose.
 - The overlay reports the renderer's capabilities (`runtimeShaders`, node effects) to the engine; effects pick a supported path.
 
-Note from the Node benchmark: on `low`, `fire-border` replaces the GPU shader with about 50 CPU-simulated particles per border. That is cheaper for the GPU but costs more JavaScript time (see [PERFORMANCE.md](PERFORMANCE.md)); which is better on a given phone has to be measured there.
+Until Phase 4.5, `low` replaced the fire shader with about 50 CPU-simulated particles per border, which cost about 6× more JavaScript time than the shader. `low` now draws the lite shader instead; the particle flames remain for renderers without runtime shaders (`mode: 'particles'`, or `shaders: false`). GPU cost per profile has not been measured on a device (see [PERFORMANCE.md](PERFORMANCE.md)).
 
 ## 9. Custom effects
 

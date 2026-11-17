@@ -89,13 +89,42 @@ describe('every built-in preset', () => {
 });
 
 describe('preset behavior', () => {
+  it('golden sparks and explosion sparks get a halo only on high quality', () => {
+    const glowOf = (quality: QualityLevel, effect: string) => {
+      const { clock, engine } = setup(quality);
+      engine.play(effect, { position: { x: 0, y: 0 } });
+      clock.advance(16);
+      return emitters(engine).find((e) => e.look === 'spark')?.glow;
+    };
+    expect(glowOf('high', 'golden-sparks')).toBeGreaterThan(0);
+    expect(glowOf('medium', 'golden-sparks')).toBe(0);
+    expect(glowOf('low', 'golden-sparks')).toBe(0);
+    expect(glowOf('high', 'explosion')).toBeGreaterThan(0);
+    expect(glowOf('medium', 'explosion')).toBe(0);
+  });
+
+  it('explosion layers keep the same timing on every quality profile', () => {
+    // Every profile: the flash is gone by 160 ms, the fireball and sparks run, the shock front
+    // starts at 30 ms; only counts and secondary layers differ.
+    const at = (quality: QualityLevel, ms: number) => {
+      const { clock, engine } = setup(quality);
+      const handle = engine.play('explosion', { position: { x: 0, y: 0 } });
+      clock.advance(ms, { frameMs: 16 });
+      return { status: handle.status, drawables: engine.drawables.length };
+    };
+    for (const q of ['low', 'medium', 'high'] as const) {
+      expect(at(q, 100).status).toBe('playing');
+      expect(at(q, 4000).status).toBe('completed');
+    }
+  });
+
   it('confetti: paper pieces launch upwards, then fall and tumble', () => {
     const { clock, engine } = setup();
     engine.play('confetti', { position: { x: 200, y: 400 }, count: 60 });
     clock.advance(100, { frameMs: 16 });
     const e = emitters(engine)[0];
     expect(e?.look).toBe('square');
-    expect(e?.aspect).toBe(0.5);
+    expect(e?.aspect).toBe(0.55);
     const meanY = () => {
       let sum = 0;
       let n = 0;
@@ -168,23 +197,28 @@ describe('preset behavior', () => {
     expect(peak(true).first?.opacity).toBeCloseTo((normal.first?.opacity ?? 0) * 0.4, 9);
   });
 
-  it('shockwave rings expand and thin; echoes and glow depend on quality', () => {
+  it('shockwave: a bright edge over a faint band that expand and thin; echoes depend on quality; no offscreen layers', () => {
     const { clock, engine } = setup('high');
     engine.play('shockwave', { position: { x: 0, y: 0 }, radius: 100, duration: 400, echoes: 1 });
     clock.advance(150);
     const rings = shapes(engine);
-    expect(rings).toHaveLength(2);
-    expect(rings[0]?.commands[0]).toMatchObject({ op: 'begin-group', effects: [{ type: 'glow' }] });
+    // Two rings (the echo on detail quality), each a band and an edge.
+    expect(rings).toHaveLength(4);
+    expect(rings.every((r) => r.commands.every((c) => c.op === 'draw'))).toBe(true);
     const low = setup('low');
     low.engine.play('shockwave', { position: { x: 0, y: 0 }, radius: 100, duration: 400, echoes: 1 });
     low.clock.advance(150);
     const lowRings = shapes(low.engine);
-    expect(lowRings).toHaveLength(1);
-    expect(lowRings[0]?.commands.map((c) => c.op)).toEqual(['draw']);
+    expect(lowRings).toHaveLength(2);
     const shape = (d: SceneDrawable | undefined) => d?.items[0]?.shape as { radius: number; stroke: { width: number } } | undefined;
-    const before = shape(lowRings[0]);
+    const [band, edge] = lowRings;
+    // The band is wider and fainter than the edge, and trails inside it.
+    expect(shape(band)?.stroke.width).toBeGreaterThan(shape(edge)?.stroke.width ?? 0);
+    expect(band?.items[0]?.opacity).toBeLessThan(edge?.items[0]?.opacity ?? 0);
+    expect(shape(band)?.radius).toBeLessThan(shape(edge)?.radius ?? 0);
+    const before = shape(edge);
     low.clock.advance(150);
-    const after = shape(shapes(low.engine)[0]);
+    const after = shape(shapes(low.engine)[1]);
     expect(after?.radius).toBeGreaterThan(before?.radius ?? 0);
     expect(after?.stroke.width).toBeLessThan(before?.stroke.width ?? 0);
   });
@@ -305,9 +339,12 @@ describe('composite effects', () => {
   it('explosion is built from primitives; quality drops the secondary parts', () => {
     const layersAt = (level: QualityLevel, params: object = {}) =>
       (explosion.create({ position: { x: 0, y: 0 }, ...params }, context(level)) as CompositeInstance).layerNames;
-    expect(layersAt('high')).toEqual(['smoke', 'flash', 'shockwave', 'sparks', 'embers']);
-    expect(layersAt('low')).toEqual(['flash', 'shockwave', 'sparks']);
-    expect(layersAt('high', { smoke: false, flash: false, debris: true })).toEqual(['shockwave', 'sparks', 'embers', 'debris']);
+    // Back to front: smoke under the fire, debris on top.
+    expect(layersAt('high')).toEqual(['smoke', 'bloom', 'fireball', 'flash', 'shockwave', 'sparks', 'embers']);
+    expect(layersAt('medium')).toEqual(['smoke', 'bloom', 'fireball', 'flash', 'shockwave', 'sparks', 'embers']);
+    expect(layersAt('low')).toEqual(['bloom', 'fireball', 'flash', 'shockwave', 'sparks']);
+    expect(layersAt('high', { smoke: false, flash: false, debris: true })).toEqual(['fireball', 'shockwave', 'sparks', 'embers', 'debris']);
+    expect(layersAt('high', { sparks: false, flash: false, shockwave: false, smoke: false })).toEqual([]);
   });
 
   it('explosion: spark count follows particles × intensity; shake only when asked', () => {

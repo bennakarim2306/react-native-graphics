@@ -140,11 +140,21 @@ describe('throwAndExplode (motion-triggered orchestration on a host view)', () =
     clock.advance(700, { frameMs: 16 });
     expect(started).not.toBeNull();
     const flash = engine.drawables.filter(isSceneDrawable).find((d) => d.items[0]?.nodeId === -1);
-    // Landing: (200 - 60, 560 + 40).
+    // Landing centre: (200 - 60, 560 + 40); the blast starts at the contact point, the bottom
+    // middle of the upright 80 × 120 card (y 600 + 60).
     expect(flash?.items[0]?.matrix[4]).toBeCloseTo(140, 6);
-    expect(flash?.items[0]?.matrix[5]).toBeCloseTo(600, 6);
+    expect(flash?.items[0]?.matrix[5]).toBeCloseTo(660, 6);
     expect(engine.targets.viewTransform('card')?.translateX).toBeCloseTo(-60, 9);
     expect(engine.targets.viewTransform('card')?.translateY).toBeCloseTo(40, 9);
+
+    // explodeAt: 'center' keeps the Phase 4 placement.
+    const centre = setup();
+    withCard(centre.engine);
+    throwAndExplode(centre.engine, 'card', { throw: { height: 100, distance: -60, drop: 40, duration: 600 }, shake: false, afterImpact: 'stay', explodeAt: 'center' });
+    centre.clock.advance(700, { frameMs: 16 });
+    const middle = centre.engine.drawables.filter(isSceneDrawable).find((d) => d.items[0]?.nodeId === -1);
+    expect(middle?.items[0]?.matrix[5]).toBeCloseTo(600, 6);
+    expect(() => throwAndExplode(centre.engine, 'card', { explodeAt: 'top' as 'center' })).toThrow('explodeAt');
   });
 
   it('cancelling mid-flight restores the view and starts no explosion', async () => {
@@ -222,11 +232,71 @@ describe('throwAndExplode (motion-triggered orchestration on a host view)', () =
     const { clock, engine } = setup();
     const node = engine.scene.createNode({ x: 50, y: 50, shape: { type: 'rect', width: 10, height: 10, fill: '#FFF' } });
     const seq = throwAndExplode(engine, node, { afterImpact: 'return', throw: { duration: 400 }, settleDelay: 0, returnDuration: 0 });
-    clock.advance(600, { frameMs: 16 });
+    // Flight 400 ms, then the 220 ms impact punch.
+    clock.advance(700, { frameMs: 16 });
     expect(seq.playback.status).toBe('completed');
-    expect([node.x, node.y, node.rotation]).toEqual([50, 50, 0]);
+    expect([node.x, node.y, node.rotation, node.scale]).toEqual([50, 50, 0, 1]);
     expect(() => throwAndExplode(engine, 'missing')).toThrow('Unknown target');
     expect(() => throwAndExplode(engine, node, { afterImpact: 'fly' as 'stay' })).toThrow('afterImpact');
     expect(() => throwAndExplode(engine, node, { settleDelay: -1 })).toThrow('settleDelay');
+    expect(() => throwAndExplode(engine, node, { punch: 1 })).toThrow('punch');
+  });
+
+  it('adds a depth cue, an impact punch and an optional trail without changing where the object lands', () => {
+    const { clock, engine } = setup();
+    const node = engine.scene.createNode({ x: 50, y: 300, shape: { type: 'rect', width: 10, height: 10, fill: '#FFF' } });
+    const seq = throwAndExplode(engine, node, { throw: { height: 100, distance: 200, duration: 1000 }, afterImpact: 'stay', trail: { rate: 60 }, explosion: false, shake: false });
+    clock.advance(500, { frameMs: 10 });
+    // Mid-flight: larger (default depth scale 1.08) and a trail is following.
+    expect(node.scale).toBeCloseTo(1.08, 6);
+    const trail = seq.trail?.handles[0];
+    expect(trail?.status).toBe('playing');
+    clock.advance(500, { frameMs: 10 });
+    // At the impact: exactly at the landing point, back to scale 1, the trail stops emitting.
+    expect(node.x).toBeCloseTo(250, 9);
+    expect(node.y).toBeCloseTo(300, 9);
+    clock.advance(60, { frameMs: 10 });
+    expect(node.scale).toBeLessThan(0.98);
+    expect(node.scale).toBeGreaterThanOrEqual(0.94 - 1e-9);
+    clock.advance(400, { frameMs: 10 });
+    expect(node.scale).toBeCloseTo(1, 9);
+    expect(seq.playback.status).toBe('completed');
+    // The stopped trail's last particles fade within their lifetime (500 ms), then it ends.
+    clock.advance(600, { frameMs: 16 });
+    expect(engine.activeCount).toBe(0);
+    expect([node.x, node.y]).toEqual([250, 300]);
+
+    // Cancelled mid-flight: position, rotation and scale restored, trail cancelled, nothing left.
+    const again = throwAndExplode(engine, node, { trail: true });
+    clock.advance(300, { frameMs: 16 });
+    again.playback.cancel();
+    expect([node.x, node.y, node.rotation, node.scale]).toEqual([250, 300, 360, 1]);
+    clock.advance(16);
+    expect(engine.activeCount).toBe(0);
+  });
+
+  it('plays the impact effects at the requested quality without changing the timing', () => {
+    const run = (quality: 'low' | 'high' | undefined) => {
+      const { clock, engine } = setup();
+      withCard(engine);
+      const seq = throwAndExplode(engine, 'card', { throw: { duration: 800 }, ...(quality ? { quality } : {}) });
+      const impacts: number[] = [];
+      seq.playback.onMarker('impact', () => impacts.push(clock.now()));
+      clock.advance(880, { frameMs: 16 });
+      const layers = engine.drawables.length;
+      clock.advance(4000, { frameMs: 16 });
+      return { impacts, layers, quality: engine.quality.level, active: engine.activeCount };
+    };
+    const low = run('low');
+    const high = run('high');
+    const engineDefault = run(undefined);
+    // Same impact moment on every profile; the engine's own profile is left alone.
+    expect(low.impacts).toEqual(high.impacts);
+    expect(engineDefault.impacts).toEqual(high.impacts);
+    expect([low.quality, high.quality]).toEqual(['medium', 'medium']);
+    // Fewer layers on low (no smoke, embers or halo passes), all of them gone at the end.
+    expect(low.layers).toBeLessThan(high.layers);
+    expect(low.layers).toBeLessThan(engineDefault.layers);
+    expect([low.active, high.active, engineDefault.active]).toEqual([0, 0, 0]);
   });
 });

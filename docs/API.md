@@ -28,7 +28,7 @@ Creates one engine when it mounts and disposes it when it unmounts. Disposal can
 | `assetBudget` | `number` (bytes) | 64 MiB soft budget for decoded images |
 | `assetManager` | `AssetManager` | none. Share one manager between providers (you dispose it) |
 | `imageLoader` | `ImageLoader` | Skia loader (`createSkiaImageLoader()`) |
-| `quality` | `'low' \| 'medium' \| 'high'` or a `QualityProfile` | `high`. See [EFFECTS.md §8](EFFECTS.md#8-quality-reduced-motion-and-capabilities) |
+| `quality` | `'low' \| 'medium' \| 'high'` or a `QualityProfile` | `medium` (`high` before Phase 4.5). See [EFFECTS.md §8](EFFECTS.md#8-quality-reduced-motion-and-capabilities) |
 | `adaptiveQuality` | `boolean \| AdaptiveQualityOptions` | off. Steps quality down when frames are slow (> 22 ms average), up when fast (< 14 ms) |
 | `reducedMotion` | `boolean \| 'system'` | `'system'`: follows the OS setting (`AccessibilityInfo`), live |
 
@@ -67,7 +67,7 @@ Measured on mount, on layout changes, on `fx.remeasure()` (call it from `onScrol
 | `timeline(options?)` | A timeline on the engine clock (`add`, `mark`, `call`, then `play()`). |
 | `cue(effect, params, options?)` | A timeline item that starts an effect at its exact time; `params` may be a function evaluated then. Options `hold`, `detached`, `playWhenSkipped` and `PlayOptions`. |
 | `throw(target, options?)` | Analytical ballistic motion (markers `launch`, `peak`, `impact`) of a target or node, for timelines. |
-| `throwAndExplode(target, options?)` | The reusable throw → impact → explosion + shake → settle sequence. Returns `{ playback, timeline, explosion, shake }`. |
+| `throwAndExplode(target, options?)` | The reusable throw → impact → explosion + shake → settle sequence. Options in [EFFECTS.md §5](EFFECTS.md#5-composition-timelines-cues-and-throw--explode), including `trail`, `punch`, `explodeAt` and `quality` (Phase 4.5). Returns `{ playback, timeline, explosion, shake, trail }`. |
 | `quality`, `setQuality(level)` | Current quality level; change it for effects started afterwards. |
 | `reducedMotion` | Whether effects run in reduced-motion mode. |
 | `remeasure(id?)` | Asks targets (all, or one) to measure again, for example after scrolling. |

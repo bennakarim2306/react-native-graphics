@@ -1,5 +1,5 @@
 /**
- * Phase 4 "GameFX Effects Showcase": demos A–G for the composable effects system.
+ * Phase 4 "GameFX Effects Showcase": demos A–H for the composable effects system.
  *
  * A. Fire border on an ordinary view: on/off, intensity, flame height, color, move, rotate, scale.
  * B. Throw & Explode: the real view is thrown, explodes at the impact, shakes, then settles.
@@ -9,6 +9,8 @@
  * F. Performance scenarios (PerfDemo.tsx).
  * G. Emitter lab (EmitterLab.tsx, Phase 4A): four emitters at once, live changes, per-handle
  *    pause/resume/stop/cancel, emitters on moving scene nodes, cleanup when the target goes.
+ * H. Visual quality comparison (QualityLab.tsx, Phase 4.5): low / medium / high side by side,
+ *    the fire border and Throw & Explode with every visual parameter, a combined finale.
  *
  * Only the public `react-native-graphics` entry point is used. Views move through their
  * transform binding (`fx.getTarget(id).motion`), so effects stay attached while they fly,
@@ -23,43 +25,9 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { GameFXTarget, useGameFX, useGameFXEngine } from 'react-native-graphics';
 import { EmitterLab } from './EmitterLab';
 import { PerfDemo } from './PerfDemo';
-import { Button } from './ui';
+import { QualityLab } from './QualityLab';
+import { Button, Card, Chips, Stepper } from './ui';
 import type { EffectHandle, GameFX, Playback, QualityLevel, ThrowAndExplodeSequence } from 'react-native-graphics';
-
-function Card({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
-  return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>{title}</Text>
-      <Text style={styles.cardSubtitle}>{subtitle}</Text>
-      {children}
-    </View>
-  );
-}
-
-/** A labelled − value + control (React Native has no built-in slider). */
-function Stepper({ label, value, format, onChange, step, min, max }: { label: string; value: number; format?: (v: number) => string; onChange: (v: number) => void; step: number; min: number; max: number }) {
-  const set = (v: number) => {
-    onChange(Math.min(max, Math.max(min, Math.round(v / step) * step)));
-  };
-  return (
-    <View style={styles.stepper}>
-      <Text style={styles.stepperLabel}>{label}</Text>
-      <Button small label="−" onPress={() => { set(value - step); }} />
-      <Text style={styles.stepperValue}>{format ? format(value) : String(value)}</Text>
-      <Button small label="+" onPress={() => { set(value + step); }} />
-    </View>
-  );
-}
-
-function Chips<T extends string>({ options, value, onChange }: { options: readonly T[]; value: T; onChange: (v: T) => void }) {
-  return (
-    <View style={styles.row}>
-      {options.map((o) => (
-        <Button key={o} small label={o} tone={o === value ? 'on' : 'normal'} onPress={() => { onChange(o); }} />
-      ))}
-    </View>
-  );
-}
 
 const FIRE_COLORS = { Orange: '#FF6A00', Blue: '#2E7DFF', Green: '#28D17C', Violet: '#B04DFF' } as const;
 type FireColor = keyof typeof FIRE_COLORS;
@@ -475,6 +443,7 @@ export function EffectsDemo() {
         <CombinedDemo />
         <PerfDemo />
         <EmitterLab />
+        <QualityLab />
       </ScrollList>
     </View>
   );

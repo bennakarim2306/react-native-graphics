@@ -71,6 +71,8 @@ export interface ParticleDrawable extends Drawable {
   readonly aspect?: number;
   /** Spark streak length in seconds of motion. */
   readonly stretch?: number;
+  /** Halo strength (0 to 1) for `spark` and `circle` looks. */
+  readonly glow?: number;
   readonly blendMode?: BlendMode;
   /** Local-space particles: transform from particle space to overlay space. */
   readonly matrix?: Matrix2D | undefined;

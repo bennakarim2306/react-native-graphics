@@ -33,8 +33,9 @@ describe('anchored drawables (what moves rigidly with a target)', () => {
     expect(sparks.length).toBeGreaterThan(0);
     expect(sparks.every((p) => p.anchor === undefined && p.matrix === undefined)).toBe(true);
 
+    // Particle flames (renderers without runtime shaders, or mode 'particles').
     const low = setup({ quality: 'low' });
-    low.engine.attach('card', { effect: 'fire-border', sparks: true });
+    low.engine.attach('card', { effect: 'fire-border', sparks: true, mode: 'particles' });
     low.clock.advance(400, { frameMs: 16 });
     const flames = particles(low.engine.drawables).filter((p) => p.matrix !== undefined);
     expect(flames.length).toBe(1);
@@ -139,8 +140,9 @@ describe('localOverflow', () => {
     engine.attach('card', { effect: 'fire-border', flameHeight: 20, padding: 2, sparks: false });
     clock.advance(100, { frameMs: 16 });
     const anchored = anchoredTo(engine.drawables, node);
-    // The flame shader rect reaches padding + 1.8 × flameHeight + 4, plus the glow (1.5 × 0.6 × 20).
-    const expected = 2 + 20 * 1.8 + 4 + 1.5 * 12;
+    // The flame shader rect reaches padding + the tallest tongues (2 × the flame height scaled by
+    // intensity 0.8) + the halo (0.9 × that height) + 4. The halo is in the shader: no filter.
+    const expected = 2 + 20 * (0.6 + 0.4 * 0.8) * (2 + 0.9) + 4;
     expect(localOverflow(anchored, node)).toBeCloseTo(expected, 6);
     const motion = engine.targets.motion('card');
     if (!motion) throw new Error('no motion');

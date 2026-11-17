@@ -203,7 +203,10 @@ export interface ShockwaveParams extends PlacementParams {
   readonly echoes?: number;
 }
 
-/** An expanding, thinning, fading ring (with an optional glow and echo rings). */
+/**
+ * An expanding, thinning, fading shock front: a thin bright leading edge over a wider faint
+ * band, with optional echo rings. Drawn as two strokes per ring (no offscreen glow layer).
+ */
 export const shockwave: EffectDefinition<ShockwaveParams> = defineEffect<ShockwaveParams>({
   name: 'shockwave',
   create(params, context) {
@@ -218,8 +221,8 @@ export const shockwave: EffectDefinition<ShockwaveParams> = defineEffect<Shockwa
     const rings = 1 + (quality.details ? echoes : 0);
     const color = params.color ?? '#FFE9A8';
     validateFill(color, `${name} color`);
-    const effects = quality.glow ? [{ type: 'glow' as const, color, radius: 10 }] : [];
-    const ease = resolveEasing('easeOutCubic');
+    // Fast start, long settle: a pressure front that decelerates.
+    const ease = (t: number) => 1 - (1 - t) ** 4;
     const lag = 0.18; // fraction of the duration between rings
     const total = duration * (1 + lag * (rings - 1));
     let drawables: Drawable[] = [];
@@ -238,15 +241,19 @@ export const shockwave: EffectDefinition<ShockwaveParams> = defineEffect<Shockwa
           return;
         }
         const m = placement.matrix();
+        const at = composeTransform(m[4], m[5], 0, 1, 1);
         drawables = [];
         for (let k = 0; k < rings; k++) {
           const p = (elapsed - k * lag * duration) / duration;
           if (p <= 0 || p >= 1) continue;
           const r = Math.max(0.5, radius * ease(p) * (1 - k * 0.12));
-          const w = Math.max(0.5, width * (1 - p));
-          const opacity = intensity * (1 - p) * (k === 0 ? 1 : 0.55) * placement.opacity;
-          const shape = { type: 'circle' as const, radius: r, stroke: { fill: color, width: w } };
-          drawables.push(shapeDrawable(elapsed, shape, composeTransform(m[4], m[5], 0, 1, 1), opacity, { blendMode: 'plus', effects }));
+          const w = Math.max(0.5, width * (1 - p) ** 0.7);
+          const fade = intensity * (1 - p) ** 1.6 * (k === 0 ? 1 : 0.45) * placement.opacity;
+          // The faint band trails just inside the bright edge.
+          const band = { type: 'circle' as const, radius: Math.max(0.5, r - w * 0.9), stroke: { fill: color, width: w * 2.4 } };
+          const edge = { type: 'circle' as const, radius: r, stroke: { fill: color, width: Math.max(0.5, w * 0.45) } };
+          drawables.push(shapeDrawable(elapsed, band, at, fade * 0.16, { blendMode: 'plus' }));
+          drawables.push(shapeDrawable(elapsed, edge, at, fade, { blendMode: 'plus' }));
         }
       },
       setParams(patch) {

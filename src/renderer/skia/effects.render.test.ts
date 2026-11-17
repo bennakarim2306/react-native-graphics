@@ -282,20 +282,35 @@ describe('local effects layer (fire drawn inside the target view)', () => {
     expect(edgeHits.every((a) => a > 0)).toBe(true);
     expect(alpha(still, 2, 2)).toBe(0);
     expect(alpha(still, 100, 120)).toBeLessThan(alpha(still, 100, 58));
-    // Move and rotate the view through its binding at the same engine time: the layer picture is
-    // unchanged, because the platform applies the transform to the view and its layer.
+    // Move the view through its binding at the same engine time: the layer picture is unchanged,
+    // because the platform applies the transform to the view and its layer.
     const motion = engine.targets.motion('card');
     if (!motion) throw new Error('no motion');
     motion.x = 70;
     motion.y = -40;
-    motion.rotation = 90;
     clock.advance(0);
     const differing = (a: Uint8Array, b: Uint8Array) => {
       let n = 0;
       for (let i = 3; i < a.length; i += 4) if (Math.abs((a[i] ?? 0) - (b[i] ?? 0)) > 24) n++;
       return n;
     };
-    expect(differing(still, layerPixels())).toBeLessThan(200 * 240 * 0.005);
+    expect(differing(still, layerPixels())).toBe(0);
+    // Flames rise on screen. Upright, they reach further above the view than below it; turned
+    // by 90°, screen-up is the view's local -x, so they reach further beyond its left edge.
+    const reach = (data: Uint8Array, x0: number, y0: number, dx: number, dy: number) => {
+      let n = 0;
+      for (let k = 1; k < 55; k++) if (alpha(data, x0 + dx * k, y0 + dy * k) > 16) n = k;
+      return n;
+    };
+    const columns = [70, 85, 100, 115, 130];
+    const rows = [80, 100, 120, 140, 160];
+    const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
+    expect(sum(columns.map((x) => reach(still, x, 60, 0, -1)))).toBeGreaterThan(sum(columns.map((x) => reach(still, x, 180, 0, 1))) * 1.4);
+    motion.rotation = 90;
+    clock.advance(0);
+    const turned = layerPixels();
+    expect(sum(rows.map((y) => reach(turned, 60, y, -1, 0)))).toBeGreaterThan(sum(rows.map((y) => reach(turned, 140, y, 1, 0))) * 1.4);
+    motion.rotation = 0;
     // Scaled up 1.3×: flames keep their height on screen, so in the layer (scaled by the
     // platform) they are 1.3× shorter, still on the view's edges.
     motion.scale = 1.3;

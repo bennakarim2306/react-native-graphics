@@ -12,6 +12,8 @@ import { AssetManager } from '../src/assets/assets';
 import { builtInEffects } from '../src/effects';
 import { createEngine } from '../src/engine/engine';
 import type { Engine } from '../src/engine/engine';
+import { throwAndExplode } from '../src/engine/sequences';
+import type { ThrowAndExplodeSequence } from '../src/engine/sequences';
 import { sharedParticlePool } from '../src/particles/pool';
 import { VirtualClock } from '../src/runtime/clock';
 import type { QualityLevel } from '../src/runtime/quality';
@@ -171,17 +173,78 @@ function continuous(minutes: number): Row[] {
   return rows;
 }
 
+/** Phase 4.5: three cards thrown in turn (one throw starts every 500 ms), with trail and the explosion. */
+function repeatedThrows(quality: QualityLevel, seconds: number): Row {
+  const { clock, engine } = setup(quality);
+  const ids = cards(engine, 3);
+  const row = measure(`repeated throw & explode, 3 cards (${quality})`, engine, clock, seconds * 60, (f) => {
+    if (f % 30 === 0) {
+      const id = ids[(f / 30) % 3] ?? 'card-0';
+      // Each card is thrown every 1.5 s; one sequence lasts 1.4 s (flight 0.9 s, settle 0.2 s, return 0.3 s).
+      throwAndExplode(engine, id, { throw: { height: 125, distance: 60, duration: 900, rotation: 360 }, explosion: { particles: 150, debris: true }, trail: true, shake: false, settleDelay: 200, returnDuration: 300 });
+    }
+  });
+  clock.advance(4000, { frameMs: FRAME });
+  const note = `idle afterwards: ${String(engine.activeCount === 0 && engine.playbackCount === 0)}`;
+  engine.dispose();
+  return { ...row, note };
+}
+
+/** Phase 4.5: cancel and replay the same throw every 5 frames (a user mashing Replay). */
+function rapidCancelReplay(quality: QualityLevel): Row {
+  const { clock, engine } = setup(quality);
+  const [id = 'card-0'] = cards(engine, 1);
+  const state: { seq: ThrowAndExplodeSequence | null } = { seq: null };
+  let replays = 0;
+  const row = measure(`rapid cancel/replay every 5 frames (${quality})`, engine, clock, 600, (f) => {
+    // Every 50 frames the throw is left to reach its impact (52 frames) before the next replay.
+    if (f % 5 === 0 && f % 100 < 50) {
+      state.seq?.playback.cancel();
+      state.seq = throwAndExplode(engine, id, { throw: { height: 125, distance: 150, duration: 860 }, explosion: { particles: 150, debris: true }, trail: true });
+      replays++;
+    }
+  });
+  state.seq?.playback.cancel();
+  clock.advance(3000, { frameMs: FRAME });
+  const v = engine.targets.viewTransform(id);
+  const restored = v?.translateX === 0 && v.translateY === 0 && v.rotation === 0 && v.scaleX === 1 && v.opacity === 1;
+  const note = `${String(replays)} replays; view restored: ${String(restored)}; idle afterwards: ${String(engine.activeCount === 0 && engine.playbackCount === 0)}`;
+  engine.dispose();
+  return { ...row, note };
+}
+
+/** Phase 4.5: long-running emitters (smoke, golden sparks stream, a trail on an orbiting node). */
+function longEmitters(quality: QualityLevel, seconds: number): Row {
+  const { clock, engine } = setup(quality);
+  engine.play('smoke', { position: { x: 120, y: 600 } });
+  engine.play('golden-sparks', { position: { x: 280, y: 500 }, count: 0, rate: 40 });
+  const orb = engine.scene.createNode({ x: 200, y: 300 });
+  engine.animate(orb, { rotation: 360, duration: 2000, repeat: Infinity }).play();
+  const comet = engine.scene.createNode({ parent: orb, x: 80, y: 0 });
+  engine.attach(comet, 'trail', { rate: 60 });
+  const row = measure(`long emitters, ${String(seconds)} s (${quality})`, engine, clock, seconds * 60);
+  engine.dispose();
+  return { ...row, note: `${String(engine.activeCount)} effects after dispose` };
+}
+
 it('Phase 4 effect scenarios: engine frame cost in Node', () => {
   const rows: Row[] = [
     fireBorders(1, 'high'),
     fireBorders(10, 'high'),
+    fireBorders(10, 'medium'),
     fireBorders(10, 'low'),
     explosions(1, 'high'),
     explosions(5, 'high'),
+    explosions(5, 'medium'),
     explosions(5, 'low'),
     spritesWithEffects(),
     createDestroy(500),
     ...continuous(3),
+    repeatedThrows('high', 30),
+    repeatedThrows('low', 30),
+    rapidCancelReplay('high'),
+    longEmitters('high', 120),
+    longEmitters('low', 120),
   ];
   const ms = (v: number) => `${v.toFixed(3)} ms`;
   const runtime = (globalThis as { process?: { version: string; platform: string; arch: string } }).process;

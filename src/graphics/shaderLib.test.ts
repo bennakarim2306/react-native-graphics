@@ -1,5 +1,5 @@
 import { formatColor, mixColor, parseColor, withAlpha } from './color';
-import { composeShader, displacementShader, flameBorderShader, SHADER_CHUNKS } from './shaderLib';
+import { composeShader, displacementShader, flameBorderLiteShader, flameBorderShader, SHADER_CHUNKS } from './shaderLib';
 import { validateFill } from './paint';
 import { shaderUniformValues } from './shader';
 
@@ -38,9 +38,14 @@ describe('shader library', () => {
     expect(displacementShader.fallback).toBe('#808080');
     // time, size(2), box(2), radius, flameHeight, intensity, color(3), seed, shape = 13 floats.
     const values = shaderUniformValues(flameBorderShader, { intensity: 1.5, color: [0, 0, 1] }, { time: 1000, width: 100, height: 50 });
-    expect(values).toHaveLength(13);
+    // time, size(2), box(2), radius, flameHeight, intensity, color(3), seed, shape, up(2), speed,
+    // glow, coreColor(3), tipColor(3): 23 floats; -1 colors mean "derive from color".
+    expect(values).toHaveLength(23);
     expect(values.slice(0, 3)).toEqual([1000, 100, 50]);
     expect(values.slice(7, 11)).toEqual([1.5, 0, 0, 1]);
+    expect(values.slice(13, 23)).toEqual([0, -1, 1, 1, -1, -1, -1, -1, -1, -1]);
+    expect(flameBorderLiteShader.uniforms).toEqual(flameBorderShader.uniforms);
+    expect(flameBorderLiteShader.source).not.toContain('fbm(');
     expect(() => { validateFill({ type: 'shader', shader: flameBorderShader, uniforms: { color: [1, 0] } }, 'fill'); }).toThrow('takes 3 value(s), got 2');
     expect(() => { validateFill({ type: 'shader', shader: flameBorderShader, uniforms: { heat: 1 } }, 'fill'); }).toThrow('no uniform');
   });

@@ -1,6 +1,78 @@
 # Performance
 
-**No device measurements exist yet.** Phases 1 to 4 have run in Node (Jest), real Skia through CanvasKit (Jest), Chromium (web build) and, for Phases 1 to 3, an Android 17 emulator in Expo Go without timing. None of this says anything about frame times on Android or iOS, so no device FPS, memory or GPU numbers are reported. Phase 4 adds the tools to take them: the same benchmark scenarios as buttons in the showcase with a live frame meter (procedure below).
+**No device measurements exist yet.** Phases 1 to 4.5 have run in Node (Jest), real Skia through CanvasKit (Jest), Chromium (web build) and, for Phases 1 to 3, an Android 17 emulator in Expo Go without timing. None of this says anything about frame times on Android or iOS, so no device FPS, memory or GPU numbers are reported. Phase 4 adds the tools to take them: the same benchmark scenarios as buttons in the showcase with a live frame meter (procedure below).
+
+## Phase 4.5: before and after, engine side and drawing side (Node, not a device)
+
+Phase 4.5 changed how effects look (new fire shader, layered explosion, throw trail and punch, glow passes on `high`) and the default profile (`medium`). Two benchmarks compare it with Phase 4A (commit c8a478b, rendered from its own source with the same scenario files). Both run in Node on the same machine; neither says what a phone's CPU or GPU will do.
+
+Environment: Node 22.23.4, Linux x64 cloud container, 2026-11-17.
+
+### Engine work per frame (`npm run bench`)
+
+Same method as the Phase 4 table below (JavaScript work per 60 FPS frame before Skia records, `performance.now()` around each frame). Each version was run twice; the table gives both averages to show the run-to-run noise. The repeated-throw and cancel/replay rows ran on 4A without the trail, punch and depth cue (options 4A does not have).
+
+| Scenario | 4A average (run 1 / run 2) | 4.5 average (run 1 / run 2) | 4.5 p95 (run 1) | 4.5 peak particles | Reading |
+| --- | --- | --- | --- | --- | --- |
+| 1 fire border (high) | 0.041 / 0.052 ms | 0.087 / 0.047 ms | 0.112 ms | 9 | same within noise |
+| 10 fire borders (high) | 0.188 / 0.304 ms | 0.391 / 0.293 ms | 0.741 ms | 78 | same within noise (sparks emitter reconfigured in place) |
+| 10 fire borders (medium) | 0.159 / 0.212 ms | 0.320 / 0.213 ms | 0.449 ms | 55 | same within noise |
+| 10 fire borders (low) | 1.727 / 1.604 ms | 0.110 / 0.105 ms | 0.149 ms | 0 | **about 15× less**: lite shader instead of 513 CPU flame particles |
+| 1 explosion of 150 particles (high) | 0.226 / 0.267 ms | 0.340 / 0.351 ms | 1.262 ms | 246 | more layers (fireball, embers, bloom) |
+| 5 explosions of 150 particles (high) | 0.554 / 0.711 ms | 1.002 / 1.068 ms | 3.523 ms | 1230 | about 1.5–1.8× more |
+| 5 explosions of 150 particles (medium) | 0.411 / 0.499 ms | 0.605 / 0.592 ms | 1.877 ms | 800 | |
+| 5 explosions of 150 particles (low) | 0.090 / 0.133 ms | 0.212 / 0.200 ms | 0.797 ms | 335 | |
+| 50 sprites, 10 trails, 10 glow pulses | 1.167 / 1.056 ms | 0.940 / 1.081 ms | 1.160 ms | 283 | unchanged |
+| 500 create/destroy cycles (3 frames each) | 0.948 / 1.226 ms | 1.032 / 0.884 ms | 1.685 ms | 0 | idle afterwards; 19 buffers allocated, 981 reused |
+| continuous, minutes 1 / 2 / 3 (run 1) | 0.393 / 0.395 / 0.380 ms | 0.436 / 0.522 / 0.501 ms | 0.823 / 1.160 / 1.200 ms | 372 | stable over 3 minutes; heap not growing |
+| repeated throw & explode, 3 cards, 30 s (high) | 0.918 / 1.056 ms | 1.193 / 1.300 ms | 2.050 ms | 552 | new scenario; idle afterwards |
+| repeated throw & explode, 3 cards, 30 s (low) | 0.192 / 0.140 ms | 0.347 / 0.363 ms | 0.631 ms | 148 | idle afterwards |
+| rapid cancel/replay every 5 frames (high) | 0.052 / 0.053 ms | 0.109 / 0.178 ms | 0.336 ms | 221 | 60 replays; view restored; idle afterwards |
+| long emitters, 120 s (high) | 0.165 / 0.150 ms | 0.176 / 0.171 ms | 0.276 ms | 92 | smoke, sparks stream, trail on an orbiting node |
+| long emitters, 120 s (low) | 0.066 / 0.066 ms | 0.077 / 0.072 ms | 0.122 ms | 34 | |
+
+Reading: every scenario stays far below a 16.7 ms frame in Node. The explosion and throw cost more JavaScript time because they now simulate more layers; `low` fire borders cost far less. Single slow frames (maxima in the raw output, up to 13 ms) come from JIT warm-up and garbage collection and appear in both versions.
+
+### Drawing cost (`npm run bench:render`)
+
+`scripts/visual/particles.renderbench.ts` records the frame with the real renderer (JavaScript plus CanvasKit calls: the work the overlay does on the JS thread every frame) and plays the picture back with CanvasKit's **CPU** rasterizer. On a phone, recording crosses JSI instead of WebAssembly and playback runs on the GPU, which runs shaders in parallel; so the playback column compares versions and profiles under identical conditions and says nothing about device frame times.
+
+**Whole frames per profile** (5 timed iterations after 1 warm-up, medians; the fire frame is small because CanvasKit evaluates the shader on the CPU at about a second per frame):
+
+| Frame | Profile | 4A primitives | 4A record | 4A CPU raster | 4.5 primitives | 4.5 record | 4.5 CPU raster |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 fire border, 1 s (360×640, 1×) | high | 7 | 0.905 ms | 577 ms | 8 | 0.655 ms | 880 ms |
+| 1 fire border, 1 s (360×640, 1×) | medium | 5 | 0.430 ms | 515 ms | 5 | 0.580 ms | 946 ms |
+| 1 fire border, 1 s (360×640, 1×) | low | 46 | 0.400 ms | 2.1 ms | 1 | 0.369 ms | 561 ms |
+| 5 explosions, 120 ms (1080×1920, 3×) | high | 1170 | 6.260 ms | 5129 ms | 1195 | 5.770 ms | 924 ms |
+| 5 explosions, 120 ms (1080×1920, 3×) | medium | 765 | 3.337 ms | 369 ms | 785 | 2.956 ms | 629 ms |
+| 5 explosions, 120 ms (1080×1920, 3×) | low | 300 | 2.104 ms | 232 ms | 355 | 1.881 ms | 543 ms |
+
+Reading:
+- **Fire shader cost per pixel went up.** The new flame shader evaluates more noise per pixel (fractal tongues plus licks, height and breathing noise); on the CPU it takes about 1.5–1.8× the old shader's time. Its halo replaced the old blur layer (one offscreen layer less per border on `high`), and `medium` and `high` run the same shader (they differ in sparks). Whether this matters on a phone's GPU is **the main open performance question of Phase 4.5**; section F's `10 fire borders` on each profile answers it.
+- **`low` fire moved work from the JS thread to the GPU.** It used to simulate about 50 particles per border (1.6–1.7 ms of JS for 10 borders, table above) and draw them cheaply; it now draws the lite shader (about 0.6× the full shader's CPU raster time) and does almost no JS work.
+- **High explosions no longer use blur layers.** The old shockwave rings drew through offscreen blur filters at full screen size; CPU playback of 5 explosions on `high` dropped from 5.1 s to 0.9 s. On `medium` and `low` the new fireball (soft, blurred particles) costs more than before (369 → 629 ms, 232 → 543 ms on the CPU).
+- Recording (the JS-thread part) changed by at most a quarter of a millisecond for the fire (down on `high`, up on `medium`) and went down for the explosions.
+- A possible optimization, not done: the breathing term of the flame is the same for every pixel and could be computed once per frame on the CPU.
+
+**Particle looks** (per-particle cost by look, 35 timed iterations after 5 warm-up, 1080×1920 at 3×):
+
+| Look | Particles | Record (median) | CPU raster playback (median) |
+| --- | --- | --- | --- |
+| circle | 200 | 0.356 ms | 23.1 ms |
+| soft | 200 | 0.676 ms | 56.4 ms |
+| spark | 200 | 0.388 ms | 13.8 ms |
+| spark + glow 1 (new) | 200 | 0.722 ms | 73.9 ms |
+| square | 200 | 0.696 ms | 16.4 ms |
+| circle | 1000 | 0.967 ms | 108.6 ms |
+| soft | 1000 | 2.036 ms | 279.4 ms |
+| spark | 1000 | 1.138 ms | 64.3 ms |
+| spark + glow 1 (new) | 1000 | 2.123 ms | 346.9 ms |
+| square | 1000 | 2.571 ms | 74.1 ms |
+
+The spark halo costs about 5× a plain spark in CPU raster, which is why presets turn it on only on `high`.
+
+**Batching experiment (not adopted).** Soft particles are drawn one blurred circle each. Drawing them instead as one `drawAtlas` call per emitter from a pre-rendered soft-dot texture was implemented and measured with the same benchmark: for 1000 soft particles, recording took 3.4–4.6 ms instead of 2.0–2.2 ms (building the transform and colour arrays costs more than the calls it saves), and CPU playback took 428 ms without mipmaps and 1279 ms with them instead of 294 ms. Batching was therefore reverted; the per-particle drawing stays until a device shows picture recording as the bottleneck.
 
 ## Phase 4 effect scenarios: engine-side cost in Node (not a device)
 
@@ -27,7 +99,7 @@ Environment: Node 22.23.4, Linux x64 cloud container, 4 vCPU Intel Xeon @ 2.10 G
 Reading:
 - Engine work stays far below a 16.7 ms frame in every scenario on this CPU. The likely costs on a phone are elsewhere and unmeasured: recording the picture (one Skia call per particle, see below), GPU fill of shaders and blurred glows, and saveLayer passes for node effects.
 - The continuous run shows no growth over three simulated minutes (stable frame cost, stable particle count, heap not growing; heap includes Jest and is not GC-forced, so it is a trend only). The create/destroy run ends idle with pooled buffers reused.
-- **Open question for devices:** `low` quality turns the fire-border shader into about 50 CPU particles per border. That costs roughly 6× more JavaScript time than `high` (1.5 ms vs 0.23 ms for 10 borders here) but removes per-pixel shader work. Which is cheaper on a low-end phone must be measured there (section F of the showcase, `10 fire borders` on `low` vs `high`).
+- **Open question for devices (Phase 4; since Phase 4.5 `low` draws a lite shader instead, see above):** `low` quality turned the fire-border shader into about 50 CPU particles per border. That costs roughly 6× more JavaScript time than `high` (1.5 ms vs 0.23 ms for 10 borders here) but removes per-pixel shader work. Which is cheaper on a low-end phone must be measured there (section F of the showcase, `10 fire borders` on `low` vs `high`).
 - Particles are drawn one Skia primitive per particle (image particles use one `drawAtlas` per emitter). 1155 particles mean about 1155 draw calls recorded per frame in the 5-explosion scenario. If devices show picture recording as the bottleneck, batching vector particles (atlas of pre-rendered dots) is the first optimization to try.
 
 ## Measuring on a device or emulator (procedure)

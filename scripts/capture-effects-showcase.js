@@ -1,4 +1,4 @@
-// Captures the Phase 4 Effects tab (demos A–E and G) of the exported web build (react-native-web + CanvasKit).
+// Captures the Phase 4 Effects tab (demos A–E, G and H) of the exported web build (react-native-web + CanvasKit).
 // Headless Chromium renders WebGL in software, so a screenshot takes over a second. To capture
 // exact moments, page time (performance.now, which the engine's frame clock reads) runs at
 // 0.25x and is frozen while each screenshot is taken. The app itself is unchanged.
@@ -151,11 +151,12 @@ const scale = Number(process.argv[3] || 2);
 
   // G. Emitter lab (Phase 4A): four emitters, live changes, pause, cancel, target removal.
   const labReport = async (label) => { logs.push(label + ': ' + (await page.getByText(/Particle pool/).first().textContent())); };
+  // Labels such as "Fountain", "Violet" and "Cancel" also exist in other demos: stay inside the lab's card.
+  const lab = page.getByText('G · Emitter lab', { exact: true }).locator('xpath=..');
   const labStep = async (label, sign, times) => {
-    for (let i = 0; i < times; i++) await page.getByText(label, { exact: true }).last().locator('xpath=..').getByText(sign, { exact: true }).click();
+    for (let i = 0; i < times; i++) await lab.getByText(label, { exact: true }).last().locator('xpath=..').getByText(sign, { exact: true }).click();
   };
-  // Labels such as "Fountain" and "Cancel" also exist in earlier demos: the lab's come last.
-  const clickLast = async (text) => { await page.getByText(text, { exact: true }).last().click(); };
+  const clickLast = async (text) => { await lab.getByText(text, { exact: true }).last().click(); };
   await scrollTo('G · Emitter lab');
   await click('Start lab'); await wait(1500); await shot('g1-lab-four-emitters');
   await labReport('lab started');
@@ -180,6 +181,51 @@ const scale = Number(process.argv[3] || 2);
   await click('Add orb'); await wait(900); await shot('g8-orb-added');
   await labReport('orb added');
   await click('End lab'); await wait(600); await shot('g9-lab-ended');
+  // H. Visual quality comparison (Phase 4.5): side by side, then fire and throw at a chosen profile.
+  const inCard = (title, text) => page.getByText(title).first().locator('xpath=..').getByText(text, { exact: true }).first();
+  const profile = async (level) => { await page.getByText('Profile for the two demos below').locator('xpath=..').getByText(level, { exact: true }).click(); };
+  const step = async (label, sign, times) => {
+    for (let i = 0; i < times; i++) await page.getByText(label, { exact: true }).last().locator('xpath=..').getByText(sign, { exact: true }).click();
+  };
+  const sbs = 'H · Quality side by side';
+  await scrollTo(sbs);
+  await inCard(sbs, 'Fire on').click(); await wait(1200); await shot('h1-side-by-side-fire');
+  await inCard(sbs, 'Rotate').click(); await wait(600); await shot('h2-side-by-side-rotated');
+  await wait(900);
+  await inCard(sbs, 'Explode all').click(); await wait(140); await shot('h3-side-by-side-explosion-140ms');
+  await wait(500); await shot('h4-side-by-side-explosion-640ms');
+  await inCard(sbs, 'Fire off').click(); await wait(1500);
+  const fireTitle = /^H · Fire border/;
+  await scrollTo('Profile for the two demos below');
+  await profile('high');
+  await inCard(fireTitle, 'Fire on').click(); await wait(1200); await shot('h5-fire-high');
+  await step('Glow strength', '+', 2); await step('Spark density', '+', 2); await wait(900); await shot('h6-fire-high-glow-1.5-sparks-2');
+  await profile('medium'); await wait(1000); await shot('h7-fire-medium');
+  await profile('low'); await wait(1000); await shot('h8-fire-low');
+  await profile('high'); await wait(600);
+  await inCard(fireTitle, 'Rotate').click(); await wait(700); await shot('h9-fire-high-rotated');
+  await wait(800);
+  await inCard(fireTitle, 'Fire off').click(); await wait(800);
+  const throwTitle = /^H · Throw & Explode/;
+  await scrollTo(throwTitle);
+  await inCard(throwTitle, 'Throw').click(); await shotOnText(/^Impact: flash/, 'h10-throw-high-impact');
+  await wait(200); await shot('h11-throw-high-explosion-200ms');
+  await wait(600); await shot('h12-throw-high-smoke-800ms');
+  await wait(2200);
+  await profile('low'); await scrollTo(throwTitle);
+  await inCard(throwTitle, 'Throw').click(); await shotOnText(/^Impact: flash/, 'h13-throw-low-impact');
+  await wait(200); await shot('h14-throw-low-explosion-200ms');
+  await wait(2200);
+  await inCard(throwTitle, 'Replay').click(); await wait(380); await inCard(throwTitle, 'Cancel').click();
+  await shotOnText(/^Cancelled: card restored/, 'h15-throw-cancelled-restored');
+  await profile('high'); await scrollTo(throwTitle);
+  await inCard(throwTitle, 'Combined finale').click(); await shotOnText(/^Impact: explosion, golden/, 'h16-finale-impact');
+  await wait(400); await shot('h17-finale-400ms');
+  await wait(900); await shot('h18-finale-1300ms');
+  await wait(3000);
+  logs.push('after the finale (fire still on the card): ' + (await page.getByText(/^Active: /).first().textContent()));
+  await inCard(throwTitle, 'Fire on card').click(); await wait(1000);
+  logs.push('after H, fire off: ' + (await page.getByText(/^Active: /).first().textContent()));
   console.log(JSON.stringify(logs, null, 1));
   await browser.close();
 })();

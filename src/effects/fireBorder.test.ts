@@ -1,7 +1,7 @@
 import { createEngine } from '../engine/engine';
 import type { Engine, EngineOptions } from '../engine/engine';
 import { PathData } from '../graphics/path';
-import { flameBorderShader } from '../graphics/shaderLib';
+import { flameBorderLiteShader, flameBorderShader } from '../graphics/shaderLib';
 import type { ParticleEmitter } from '../particles/emitter';
 import { VirtualClock } from '../runtime/clock';
 import { QUALITY_PROFILES } from '../runtime/quality';
@@ -16,7 +16,7 @@ import { builtInEffects } from './index';
 function setup(options: Partial<EngineOptions> = {}) {
   const clock = new VirtualClock(0);
   const errors: unknown[] = [];
-  const engine = createEngine({ clock, effects: builtInEffects, seed: 9, onError: (e) => errors.push(e), ...options });
+  const engine = createEngine({ clock, effects: builtInEffects, seed: 9, quality: 'high', onError: (e) => errors.push(e), ...options });
   const card = engine.scene.createNode({ x: 200, y: 300, size: { width: 100, height: 140 } });
   return { clock, engine, card, errors };
 }
@@ -41,7 +41,9 @@ describe('fire-border', () => {
     };
     expect(mode('high', true)).toBe('shader');
     expect(mode('medium', true)).toBe('shader');
-    expect(mode('low', true)).toBe('particles');
+    // Low uses the cheaper shader variant (see the next test); particles only without shaders.
+    expect(mode('low', true)).toBe('shader');
+    expect(mode('low', false)).toBe('particles');
     expect(mode('high', false)).toBe('particles');
     expect(mode('high', true, { mode: 'particles' })).toBe('particles');
     expect(mode('low', true, { mode: 'shader' })).toBe('shader');
@@ -54,11 +56,13 @@ describe('fire-border', () => {
     clock.advance(16);
     let rect = flameRect(engine);
     expect(rect).toBeDefined();
-    const margin = 20 * 1.8 + 4;
+    // Reach of the tallest tongues (2 × the intensity-scaled height) plus the halo (glow 1).
+    const margin = 20 * (0.6 + 0.4 * 0.8) * (2 + 0.9) + 4;
     expect(rect?.items[0]?.shape).toMatchObject({ type: 'rect', width: 100 + margin * 2, height: 140 + margin * 2 });
-    expect(uniformsOf(rect)).toMatchObject({ box: [50, 70], radius: 10, flameHeight: 20, shape: 0 });
-    // Additive: with a glow the whole layer is added to what is below it.
-    expect(rect?.commands[0]).toMatchObject({ op: 'begin-group', blendMode: 'plus' });
+    expect(uniformsOf(rect)).toMatchObject({ box: [50, 70], radius: 10, flameHeight: 20, shape: 0, up: [-0, -1], speed: 1, glow: 1 });
+    // Additive and drawn directly: the halo is part of the shader, no offscreen layer.
+    expect(rect?.items[0]?.blendMode).toBe('plus');
+    expect(rect?.commands.map((c) => c.op)).toEqual(['draw']);
     expect(rect?.items[0]?.matrix).toEqual([1, 0, -0, 1, 200, 300]);
     expect((rect?.items[0]?.shape as { fill: ShaderFill }).fill.shader).toBe(flameBorderShader);
 
@@ -74,6 +78,23 @@ describe('fire-border', () => {
     expect(uniformsOf(rect).box).toEqual([75, 105]);
     expect(Math.hypot(m[0] ?? 0, m[1] ?? 0)).toBeCloseTo(1, 9);
     expect(uniformsOf(rect).flameHeight).toBe(20);
+    // Flames rise on screen: "up" in the frame turned by 30° is (-sin 30°, -cos 30°).
+    const up = uniformsOf(rect).up as number[];
+    expect(up[0]).toBeCloseTo(-0.5, 9);
+    expect(up[1]).toBeCloseTo(-Math.sqrt(3) / 2, 9);
+  });
+
+  it('uses the lite shader without halo on low quality and the full one otherwise', () => {
+    const shaderOf = (quality: QualityLevel) => {
+      const { clock, engine, card } = setup({ quality });
+      engine.play('fire-border', { target: card });
+      clock.advance(16);
+      const rect = flameRect(engine);
+      return { shader: (rect?.items[0]?.shape as { fill: ShaderFill }).fill.shader, glow: uniformsOf(rect).glow };
+    };
+    expect(shaderOf('low')).toEqual({ shader: flameBorderLiteShader, glow: 0 });
+    expect(shaderOf('medium')).toEqual({ shader: flameBorderShader, glow: 1 });
+    expect(shaderOf('high')).toEqual({ shader: flameBorderShader, glow: 1 });
   });
 
   it('animates continuously from engine time', () => {
@@ -87,10 +108,11 @@ describe('fire-border', () => {
 
   it('adds glow, sparks and heat haze by option and quality', () => {
     const { clock, engine, card } = setup();
-    engine.play('fire-border', { target: card, heatHaze: true });
+    engine.play('fire-border', { target: card, heatHaze: true, glowStrength: 1.5 });
     clock.advance(16);
     const group = flameRect(engine)?.commands[0];
-    expect(group).toMatchObject({ op: 'begin-group', effects: [{ type: 'glow' }, { type: 'distort' }] });
+    expect(group).toMatchObject({ op: 'begin-group', effects: [{ type: 'distort' }] });
+    expect(uniformsOf(flameRect(engine)).glow).toBe(1.5);
     clock.advance(300, { frameMs: 16 });
     expect(emitters(engine).some((e) => e.look === 'spark')).toBe(true);
 
@@ -98,7 +120,20 @@ describe('fire-border', () => {
     plain.engine.play('fire-border', { target: plain.card, glow: false, sparks: false });
     plain.clock.advance(300, { frameMs: 16 });
     expect(flameRect(plain.engine)?.commands.map((c) => c.op)).toEqual(['draw']);
+    expect(uniformsOf(flameRect(plain.engine)).glow).toBe(0);
     expect(emitters(plain.engine)).toHaveLength(0);
+
+    // sparkDensity 0 means no spark emitter; 2 doubles the rate of the default.
+    const sparkCount = (density: number) => {
+      const run = setup();
+      run.engine.play('fire-border', { target: run.card, sparkDensity: density });
+      run.clock.advance(1000, { frameMs: 16 });
+      return emitters(run.engine).find((e) => e.look === 'spark')?.born ?? 0;
+    };
+    expect(sparkCount(0)).toBe(0);
+    const one = sparkCount(1);
+    expect(one).toBeGreaterThan(5);
+    expect(sparkCount(2)).toBeGreaterThan(one * 1.6);
 
     const medium = setup({ quality: 'medium' });
     medium.engine.play('fire-border', { target: medium.card, heatHaze: true });
@@ -106,7 +141,7 @@ describe('fire-border', () => {
     expect(flameRect(medium.engine)?.commands.map((c) => c.op)).toEqual(['draw']);
   });
 
-  it('particle flames are born on the outline, rise outward along its normals and move with the target', () => {
+  it('particle flames are born on the outline, rise on screen whatever the rotation and move with the target', () => {
     const { clock, engine, card } = setup();
     engine.play('fire-border', { target: card, mode: 'particles', sparks: false, padding: 0, shape: 'rect', flameHeight: 20 });
     clock.advance(200, { frameMs: 16 });
@@ -117,20 +152,67 @@ describe('fire-border', () => {
     // Rate ~ perimeter (480) × 1.4 × intensity 0.8 per second.
     expect(flames?.born).toBeGreaterThan(80);
     expect(flames?.born).toBeLessThan(130);
-    // Local space: every particle sits around the outline, outside or on it.
-    let outside = 0;
+    // Local space: particles start on the outline and move up (negative y), not outward.
+    const motion = () => {
+      let up = 0;
+      let alive = 0;
+      let nearOutline = 0;
+      for (let i = 0; i < (flames?.count ?? 0); i++) {
+        if (flames?.alive[i] !== 1) continue;
+        alive++;
+        if ((flames.vy[i] ?? 0) < 0) up++;
+        const x = Math.abs(flames.x[i] ?? 0);
+        const y = Math.abs(flames.y[i] ?? 0);
+        if (x >= 40 || y >= 60) nearOutline++;
+      }
+      return { up: up / alive, nearOutline: nearOutline / alive };
+    };
+    const upright = motion();
+    expect(upright.up).toBeGreaterThan(0.95);
+    expect(upright.nearOutline).toBeGreaterThan(0.9);
+    card.x = 400;
+    clock.advance(16);
+    expect(flames?.matrix?.[4]).toBe(400);
+    // Turned upside down, screen-up is local +y: new particles move toward local +y.
+    card.rotation = 180;
+    clock.advance(800, { frameMs: 16 });
+    let down = 0;
     let alive = 0;
     for (let i = 0; i < (flames?.count ?? 0); i++) {
       if (flames?.alive[i] !== 1) continue;
       alive++;
-      const x = Math.abs(flames.x[i] ?? 0);
-      const y = Math.abs(flames.y[i] ?? 0);
-      if (x >= 49.9 || y >= 69.9) outside++;
+      if ((flames.vy[i] ?? 0) > 0) down++;
     }
-    expect(outside / alive).toBeGreaterThan(0.95);
-    card.x = 400;
-    clock.advance(16);
-    expect(flames?.matrix?.[4]).toBe(400);
+    expect(down / alive).toBeGreaterThan(0.95);
+  });
+
+  it('reconfigures its emitters in place while the target scales, so particles never pile up', () => {
+    const liveSparks = (engine: Engine) => emitters(engine).filter((e) => e.look === 'spark').reduce((n, e) => n + e.aliveCount, 0);
+    const steady = setup();
+    steady.engine.play('fire-border', { target: steady.card, sparkDensity: 2 });
+    steady.clock.advance(1500, { frameMs: 16 });
+    const baseline = liveSparks(steady.engine);
+    expect(baseline).toBeGreaterThan(5);
+
+    const scaling = setup();
+    scaling.engine.play('fire-border', { target: scaling.card, sparkDensity: 2 });
+    scaling.clock.advance(1000, { frameMs: 16 });
+    let peak = 0;
+    for (let i = 0; i < 31; i++) {
+      scaling.card.scale = 1 + i * 0.012;
+      scaling.clock.advance(16);
+      peak = Math.max(peak, liveSparks(scaling.engine));
+      // Still one spark emitter: nothing is recreated or left draining.
+      expect(emitters(scaling.engine).filter((e) => e.look === 'spark').length).toBeLessThanOrEqual(1);
+    }
+    // A bigger outline emits proportionally more (perimeter × 1.36 at most), never a pile-up.
+    expect(peak).toBeLessThan(baseline * 1.36 * 1.6);
+    // And the sparks are now born on the scaled outline (half width 50 × 1.36 = 68).
+    scaling.clock.advance(1200, { frameMs: 16 });
+    const sparks = emitters(scaling.engine).find((e) => e.look === 'spark');
+    let far = 0;
+    for (let i = 0; i < (sparks?.count ?? 0); i++) if (sparks?.alive[i] === 1 && Math.abs((sparks.x[i] ?? 0) - 200) > 58) far++;
+    expect(far).toBeGreaterThan(0);
   });
 
   it('follows a path outline with particle flames', () => {

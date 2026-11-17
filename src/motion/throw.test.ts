@@ -16,7 +16,7 @@ describe('ThrowMotion (analytical ballistic flight)', () => {
     const { engine } = setup();
     const node = engine.scene.createNode({ x: 100, y: 300 });
     const motion = engine.motion.throw(node, { height: 200, distance: 120, drop: 50, duration: 1000, rotation: 540 });
-    expect(motion.offsetAt(0)).toEqual({ x: 0, y: -0, rotation: 0 });
+    expect(motion.offsetAt(0)).toEqual({ x: 0, y: -0, rotation: 0, scale: 1 });
     const peak = motion.offsetAt(motion.peakTime);
     expect(peak.y).toBeCloseTo(-200, 9);
     const end = motion.offsetAt(1000);
@@ -36,6 +36,28 @@ describe('ThrowMotion (analytical ballistic flight)', () => {
     expect(speed(999.5)).toBeGreaterThan(speed(0.5));
     // The peak comes before the middle because the landing is below the start.
     expect(motion.peakTime).toBeLessThan(500);
+  });
+
+  it('depth scale grows to its peak at mid-flight and is back to the start at the impact', () => {
+    const { clock, engine } = setup();
+    const node = engine.scene.createNode({ x: 100, y: 300, scale: 0.8 });
+    const motion = engine.motion.throw(node, { height: 100, duration: 1000, scale: 1.2 });
+    expect(motion.offsetAt(500).scale).toBeCloseTo(1.2, 9);
+    expect(motion.offsetAt(250).scale).toBeCloseTo(1.15, 9);
+    expect(motion.offsetAt(1000).scale).toBe(1);
+    const playback = motion.play();
+    clock.advance(500, { frameMs: 16 });
+    expect(node.scale).toBeCloseTo(0.8 * 1.2, 9);
+    clock.advance(600, { frameMs: 16 });
+    expect(playback.status).toBe('completed');
+    expect(node.scale).toBeCloseTo(0.8, 9);
+    // Cancelled mid-flight: the scale is restored with the position.
+    const again = engine.motion.throw(node, { height: 100, duration: 1000, scale: 1.2 }).play();
+    clock.advance(400, { frameMs: 16 });
+    expect(node.scale).toBeGreaterThan(0.85);
+    again.cancel();
+    expect(node.scale).toBe(0.8);
+    expect(() => engine.motion.throw(node, { scale: 0 })).toThrow('scale must be > 0');
   });
 
   it('takes its duration from gravity when gravity is given', () => {

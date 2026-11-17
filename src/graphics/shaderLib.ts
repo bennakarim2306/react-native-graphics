@@ -16,7 +16,10 @@ export interface ShaderChunk {
 export const SHADER_CHUNKS: Readonly<Record<string, ShaderChunk>> = {
   hash: {
     name: 'hash',
+    // The lattice wraps every 289 cells: noise scrolled for hours keeps full float precision
+    // (large coordinates would otherwise quantize the hash into visible blocks).
     code: `float hash21(float2 p) {
+  p = mod(p, 289.0);
   p = fract(p * float2(123.34, 456.21));
   p += dot(p, p + 45.32);
   return fract(p.x * p.y);
@@ -45,6 +48,13 @@ export const SHADER_CHUNKS: Readonly<Record<string, ShaderChunk>> = {
     a *= 0.5;
   }
   return v;
+}`,
+  },
+  fbm2: {
+    name: 'fbm2',
+    requires: ['noise'],
+    code: `float fbm2(float2 p) {
+  return 0.5 * vnoise(p) + 0.25 * vnoise(p * 2.03 + float2(17.1, 9.2));
 }`,
   },
   warp: {
@@ -119,51 +129,109 @@ export function composeShader(options: ComposeShaderOptions): ShaderDefinition {
   });
 }
 
+const FLAME_UNIFORMS = {
+  time: 0,
+  size: [100, 100],
+  box: [40, 30],
+  radius: 12,
+  flameHeight: 24,
+  intensity: 1,
+  color: [1, 0.42, 0.05],
+  seed: 0,
+  shape: 0,
+  up: [0, -1],
+  speed: 1,
+  glow: 1,
+  coreColor: [-1, -1, -1],
+  tipColor: [-1, -1, -1],
+} as const;
+
 /**
- * Flames rising outward from a rounded rectangle (`shape` 0) or ellipse (`shape` 1) centred
- * in the drawn area. Inside the outline it is transparent, so the host view shows through.
- * Output is premultiplied. Uniforms:
+ * Body of both flame shaders. `NOISE` is the fbm variant (4 or 2 octaves); `GLOW` is 1.0 or
+ * 0.0 (the lite variant compiles the halo out).
+ */
+const FLAME_MAIN = `
+  float2 c = p - size * 0.5;
+  float d0 = shape < 0.5 ? sdRoundRect(c, box, radius) : sdEllipse(c, box);
+  float k = clamp(intensity, 0.0, 2.0);
+  float h = max(flameHeight * (0.6 + 0.4 * k), 0.001);
+  float glowOn = GLOW * clamp(glow, 0.0, 2.0);
+  // Nothing to draw deep inside the outline or beyond the reach of tongues and halo.
+  if (d0 < -4.0 || d0 > h * (2.0 + glowOn * 0.9)) return half4(0.0);
+  // Screen "up" in this frame, so flames rise on screen whatever the target's rotation.
+  float2 upv = normalize(up + float2(0.0, -0.000001));
+  float2 rt = float2(-upv.y, upv.x);
+  float along = dot(c, rt);
+  float height = dot(c, upv);
+  float t = time * speed;
+  // Buoyancy: measure the distance from a point moved down by half its own distance, so
+  // tongues reach about twice as far above the top edge as beside the sides, and stay short
+  // below the bottom edge.
+  float lift = clamp(d0, 0.0, h * 2.0) * 0.5;
+  float2 cl = c - upv * lift;
+  float d = shape < 0.5 ? sdRoundRect(cl, box, radius) : sdEllipse(cl, box);
+  float2 s0 = float2(seed * 17.3, seed * 9.1);
+  // Tongues: noise stretched along "up" and scrolling upward; a slow field along the outline
+  // sets how far each tongue reaches and lets heights grow and shrink over time.
+  // Tongues sway sideways more the further they are from the base, which tapers their tips.
+  float rise = clamp(d0 / h, 0.0, 1.5);
+  float sway = vnoise(float2(along * 0.035, height * 0.028 - t * 0.9) + s0 * 2.3) - 0.5;
+  float along2 = along + sway * 16.0 * rise;
+  float tongues = NOISE(float2(along2 * 0.13, height * 0.03 - t * 1.4) + s0);
+  float tall = vnoise(float2(along * 0.05 + 3.7, t * 0.5) + s0);
+  float lick = vnoise(float2(along2 * 0.24, height * 0.08 - t * 3.1) + s0 * 1.7);
+  float g = clamp(1.0 - d / (h * 0.9 * (0.55 + 0.75 * tall)), 0.0, 1.0);
+  // Solid and hot at the base; towards the tips only the strongest tongues survive.
+  float T = g * 1.3 - (1.0 - tongues) * (1.05 - 0.55 * g) + (lick - 0.5) * 0.26 * (1.0 - g * 0.5);
+  // Smooth brightness breathing (no frame-to-frame randomness).
+  T *= 0.93 + 0.14 * vnoise(float2(t * 2.2, seed * 5.0));
+  T = clamp(T, 0.0, 1.25);
+  float3 mid = color.rgb;
+  float3 hot = clamp(mid + float3(0.0, 0.38, 0.12) + (1.0 - mid) * 0.18, 0.0, 1.0);
+  float3 core = coreColor.r < 0.0 ? mix(hot, float3(1.0), 0.72) : coreColor.rgb;
+  float3 tip = tipColor.r < 0.0 ? mid * float3(0.85, 0.45, 0.4) : tipColor.rgb;
+  float3 col = mix(tip, mid, smoothstep(0.1, 0.45, T));
+  col = mix(col, hot, smoothstep(0.55, 0.9, T));
+  col = mix(col, core, smoothstep(0.95, 1.2, T));
+  float a = smoothstep(0.03, 0.26, T) * smoothstep(-3.0, 0.5, d0) * clamp(k, 0.0, 1.0);
+  float3 rgb = col * a;
+  // Halo: soft light around the flames, outside the outline, with a little spill on the edge.
+  float outside = max(d0, 0.0);
+  float halo = glowOn * 0.2 * clamp(k, 0.0, 1.2) * exp(-outside / (h * 0.55)) * (0.75 + 0.25 * tall);
+  halo *= smoothstep(-4.0, 1.0, d0) * (d0 < 0.0 ? 0.4 : 1.0) * (1.0 - a * 0.6);
+  rgb += mix(mid, hot, 0.25) * halo;
+  return half4(rgb, min(1.0, a + halo * 0.5));
+`;
+
+/**
+ * Procedural fire around a rounded rectangle (`shape` 0) or ellipse (`shape` 1) centred in the
+ * drawn area: tongues that rise on screen (`up` is screen-up in the shader's frame), lean
+ * upward along the sides, grow and shrink over time, with a white-yellow core, orange body,
+ * red tips and an optional halo. Inside the outline it is transparent, so the host view shows
+ * through. Continuous in time (noise advected by `time`), premultiplied output. Uniforms:
  * - `box`: half size of the outline; `radius`: corner radius
- * - `flameHeight`: maximum flame length in points; `intensity`: 0 to 2
- * - `color`: base flame color (rgb); `seed`: varies the pattern between instances
+ * - `flameHeight`: flame length in points; `intensity`: 0 to 2; `speed`: flame speed factor
+ * - `color`: body color (rgb); `coreColor`, `tipColor`: rgb, or -1 to derive from `color`
+ * - `glow`: halo strength 0 to 2; `up`: screen-up direction in the frame; `seed`: pattern
  */
 export const flameBorderShader = composeShader({
   name: 'flame-border',
   use: ['fbm', 'sdRoundRect', 'sdEllipse'],
   fallback: '#00000000',
-  uniforms: {
-    time: 0,
-    size: [100, 100],
-    box: [40, 30],
-    radius: 12,
-    flameHeight: 24,
-    intensity: 1,
-    color: [1, 0.42, 0.05],
-    seed: 0,
-    shape: 0,
-  },
-  main: `
-  float2 c = p - size * 0.5;
-  float d = shape < 0.5 ? sdRoundRect(c, box, radius) : sdEllipse(c, box);
-  if (d < -2.0) return half4(0.0);
-  float h = max(flameHeight * clamp(intensity, 0.0, 2.0), 0.001);
-  // Outward direction (normalized position on the outline) so flames rise away from the edge.
-  float2 n = normalize(c / max(box, float2(1.0)) + float2(0.0001));
-  float2 q = c * 0.045 + float2(seed * 13.7, seed * 7.1);
-  // Flame tongues: slow noise along the outline sets how tall each tongue is; faster noise
-  // scrolling outward makes them flicker and break up.
-  float tall = 0.35 + 0.85 * fbm(q * 0.9 + float2(time * 0.35, -time * 0.25));
-  float flicker = fbm(q * 2.3 - n * time * 2.6);
-  float f = 1.0 - d / (h * tall);
-  f += (flicker - 0.5) * 0.85;
-  f = clamp(f, 0.0, 1.0);
-  float3 base = color.rgb;
-  float3 col = mix(base * 0.35, base, smoothstep(0.0, 0.4, f));
-  col = mix(col, float3(1.0, 0.82, 0.32), smoothstep(0.45, 0.8, f));
-  col = mix(col, float3(1.0, 0.97, 0.86), smoothstep(0.86, 1.0, f));
-  float a = smoothstep(0.02, 0.45, f) * smoothstep(-2.0, 0.5, d) * clamp(intensity, 0.0, 1.0);
-  return half4(col * a, a);
-`,
+  uniforms: FLAME_UNIFORMS,
+  main: FLAME_MAIN.replace('NOISE', 'fbm').replace('GLOW', '1.0'),
+});
+
+/**
+ * Cheaper variant of `flameBorderShader` for the low quality profile: two noise octaves
+ * instead of four and no halo. Same uniforms, same shape and timing.
+ */
+export const flameBorderLiteShader = composeShader({
+  name: 'flame-border-lite',
+  use: ['fbm2', 'sdRoundRect', 'sdEllipse'],
+  fallback: '#00000000',
+  uniforms: FLAME_UNIFORMS,
+  main: FLAME_MAIN.replace('NOISE', 'fbm2').replace('GLOW', '0.0'),
 });
 
 /** Grayscale noise for displacement (`distort` node effect): r and g are two noise fields. */

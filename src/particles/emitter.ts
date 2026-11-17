@@ -97,6 +97,11 @@ export interface EmitterConfig {
   readonly aspect?: number;
   /** Length of `spark` streaks as seconds of motion. Default 0.04. */
   readonly stretch?: number;
+  /**
+   * Halo around `spark` and `circle` particles, 0 to 1: a wider, faint pass under a whiter
+   * core (one extra draw per particle). Default 0.
+   */
+  readonly glow?: number;
   /** How particles combine with what is below. `plus` makes fire and sparks glow. Default `normal`. */
   readonly blendMode?: BlendMode;
   /** World space only: fraction of the emitter's own velocity given to newborn particles. Default 0. */
@@ -115,7 +120,7 @@ export interface EmitterConfig {
  * - `rate` re-times continuous emission from now on.
  *
  * Fixed for the emitter's life (they size its storage or its batches): `space`, `maxParticles`,
- * `bursts`, `duration`, `look`, `aspect`, `stretch` and `blendMode`.
+ * `bursts`, `duration`, `look`, `aspect`, `stretch`, `glow` and `blendMode`.
  */
 export type EmitterUpdate = Pick<
   EmitterConfig,
@@ -193,6 +198,7 @@ interface Resolved {
   readonly frameMode: 'random' | 'life';
   readonly aspect: number;
   readonly stretch: number;
+  readonly glow: number;
   readonly blendMode: BlendMode;
   readonly inheritVelocity: number;
 }
@@ -281,6 +287,8 @@ export function resolveEmitterConfig(config: EmitterConfig, qualityScale = 1): R
   const aspect = finiteNumber(config.aspect ?? 1, 'aspect');
   if (aspect <= 0) throw new InvalidOptionError('aspect must be > 0.');
   const stretch = finiteNumber(config.stretch ?? 0.04, 'stretch');
+  const glow = finiteNumber(config.glow ?? 0, 'glow');
+  if (glow < 0 || glow > 1) throw new InvalidOptionError('glow must be between 0 and 1.');
   const blendMode = config.blendMode ?? 'normal';
   validateBlendMode(blendMode);
   const inheritVelocity = finiteNumber(config.inheritVelocity ?? 0, 'inheritVelocity');
@@ -318,6 +326,7 @@ export function resolveEmitterConfig(config: EmitterConfig, qualityScale = 1): R
     frameMode,
     aspect,
     stretch,
+    glow,
     blendMode,
     inheritVelocity,
   };
@@ -342,6 +351,7 @@ export class ParticleEmitter implements ParticleDrawable {
   readonly blendMode: BlendMode;
   readonly aspect: number;
   readonly stretch: number;
+  readonly glow: number;
   readonly image: ImageAsset | undefined;
   readonly frames: readonly Rect[] | undefined;
   /** Local space: transform applied to every particle when drawing. */
@@ -383,6 +393,7 @@ export class ParticleEmitter implements ParticleDrawable {
     this.blendMode = this.cfg.blendMode;
     this.aspect = this.cfg.aspect;
     this.stretch = this.cfg.stretch;
+    this.glow = this.cfg.glow;
     this.image = this.cfg.image;
     this.frames = this.cfg.frames;
     this.pool = options.pool ?? sharedParticlePool;

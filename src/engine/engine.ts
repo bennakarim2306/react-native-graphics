@@ -379,7 +379,7 @@ export class Engine implements PlayableRunner {
         this.onPlaybackEnded(playback, result);
       },
     };
-    this.qualityProfile = resolveQuality(options.quality ?? 'high');
+    this.qualityProfile = resolveQuality(options.quality ?? 'medium');
     const adaptive = options.adaptiveQuality;
     this.adaptive = adaptive
       ? new AdaptiveQuality(this.qualityProfile.level, typeof adaptive === 'object' ? adaptive : {})

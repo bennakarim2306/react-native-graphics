@@ -14,6 +14,8 @@ How the SDK is tested, what each layer proves, and how to run it. Commands are f
 | `npx jest src/engine/sequences.test.ts -t "replay"` | One file, one test name |
 | `npx jest --coverage` | Coverage report in `coverage/` |
 | `npm run bench` | Node benchmarks (`scripts/*.bench.ts`); see [PERFORMANCE.md](PERFORMANCE.md) |
+| `npm run bench:render` | Phase 4.5: picture recording and CPU raster cost with real Skia (CanvasKit) per particle look and per quality profile (`scripts/visual/particles.renderbench.ts`) |
+| `npm run visual` | Phase 4.5: renders the deterministic visual scenes to PNG with real Skia (`scripts/visual/`); `VISUAL_OUT=<folder>` sets the output (default `visual-out/`), `VISUAL_ONLY=fire,throw` picks scenes by name |
 | `npm run example:install`, then `cd example` and `npx tsc --noEmit` | Builds and packs the SDK, installs the tarball in the showcase, type-checks the showcase against the public API only |
 | `cd example`, then `npx expo export --platform android` (or `ios`, `web`) | Bundles the showcase for each platform |
 
@@ -48,12 +50,19 @@ How the SDK is tested, what each layer proves, and how to run it. Commands are f
 | `src/engine/sequences.test.ts` | Cues: exact timing, ownership, skip, hold. Throw & Explode: explosion at the impact point, cancel mid-flight and after impact, **replay right after cancel in every phase** (regression test), finish, unmount mid-flight, scene nodes, validation |
 | `src/engine/stress.test.ts` | 100 explosions in a row (all complete, pool reuse), 1000 effects of every kind, 200 effects in one frame against the limit, 12 continuous emitters for a simulated minute, 200 target mount/unmount cycles with effects attached, cancelling a complex sequence at every stage, dispose during heavy load |
 | `src/scene/targets.test.ts` | Transform binding: proxy node placement, view transform events, combination with measured rotation/scale, tweening the binding, offsets, unregistering, target handles accepted everywhere |
+| `src/renderer/skia/density.render.test.ts` (Phase 4.5) | Sharpness at device density: a vector disc keeps 1–2 px anti-aliased edges and the same size at 1×, 2× and 3× (a control drawn at 1× and scaled up fails the check); the fire shader covers the same area at every density, matches the 1× image when averaged back down, and shades each device pixel on its own (an upscaled 1× image has no detail inside a block); images and image particles request linear filtering with mipmaps (`nearest` for pixel art); the same seed and time give identical pixels, one frame later changes a little, half a second a lot |
 | `src/renderer/skia/effects.render.test.ts` | CanvasKit pixels: particle looks, colors over life, additive blending, local space, `drawAtlas` image particles, fire-border shader pixels, animation over time and with intensity, shader compiled once for many nodes, distortion, explosion, camera offset when recording, fire recorded into a target's local layer (flames on the view's edges; identical pixels after moving and rotating the view; correct when scaled) |
 | `src/engine/localLayers.test.ts` | Local effects layers: which drawables are anchored (fire flames, borders, glow pulses, local particles; not sparks or fixed placements), anchors dropped when the target goes, the overlay leaving out exactly the drawables of targets with a layer, the layer matrix mapping the view's box the same way whatever the motion, rotation and scale, and how far effects reach beyond the view |
 | `src/react-native/localLayer.test.tsx` | `GameFXTarget`'s layer: mounted when fire is attached and sized from its reach, overlay keeps drawing until the layer is laid out, then anchored drawables go only to the layer (sparks stay in the overlay), local geometry unchanged while the view moves, rotates and scales, `effectsLayer="overlay"`, removal after idle frames and return on a new effect, cleanup on unmount |
 | `src/react-native/phase4.test.tsx` | Transform binding applied to a real view's style (with the view's own transform and opacity kept), deferred measurement while transformed, Throw & Explode on a view (and its button still works afterwards), unmount mid-sequence, target-scoped shake, `attach` spec on an ordinary view, timeline/cue/throw through the hook, the composition example (`getTarget`, `attach`, `animate`, explosion, `stop`), quality prop, reduced motion (system and forced), renderer capabilities |
 
 Earlier phases' tests (runtime, animation, scene, graphics, assets, sprites, provider, overlay pointer passthrough, unmount cleanup) still run unchanged.
+
+## Visual regression scenes (Phase 4.5)
+
+`npm run visual` renders 19 deterministic scenes (fire border per profile, rotated, rotating, scaled, scaling, colors; the throw with its impact frames per profile; the explosion from 17 ms to 2.2 s; smoke; confetti; golden sparks; glow pulse; trail; victory; a combined scene) to 62 PNGs plus `manifest.json` (parameters, primitives drawn, share of changed pixels, mean luminance). Each scene starts the engine at time 0 with seed 7 and steps a virtual clock in 60 FPS frames to each capture time; the frame is recorded with the renderer (with the camera offset, as the overlay does) and drawn on a surface of width × density by height × density pixels with the canvas scaled by the density, as React Native Skia does. Running it twice gives identical files.
+
+To compare two versions, render each with its own source and the same `scripts/visual/` folder (the Phase 4.5 report did this for commit c8a478b). The images are CanvasKit's CPU rasterizer, not a device screenshot; blur and anti-aliasing can differ slightly from the GPU backends.
 
 ## Visual checks (web build)
 
@@ -64,7 +73,7 @@ Unit tests cannot judge whether flames look like flames. The showcase is therefo
 3. Serve `dist-web` on port 8099 (for example `python -m http.server 8099 --directory dist-web`).
 4. From the repository root: `node scripts/capture-effects-showcase.js <output-folder> 2` (needs Playwright with Chromium; `SHOWCASE_URL` overrides the address).
 
-The script presses the showcase's buttons and saves screenshots of demos A to E and G (the Emitter lab: four emitters, live changes, pause all, cancel, removing and adding the orb, with the lab's pool counters written to the log), including fire riding on the thrown card (B), the flipping cards (E) and a scroll made while the engine is frozen (A): fire drawn in the card's own layer must move with the card although no engine frame runs. Headless Chromium renders WebGL in software and needs over a second per screenshot, so the script slows page time to 0.25× and freezes it while each screenshot is taken. The app is unchanged; only `performance.now()` in the page is controlled.
+The script presses the showcase's buttons and saves screenshots of demos A to E, G and H (H: the three profiles side by side with fire, rotated and exploding; the fire border at each profile and with more glow and sparks; the throw's impact and aftermath on `high` and `low`; cancel; the combined finale; and G: the Emitter lab: four emitters, live changes, pause all, cancel, removing and adding the orb, with the lab's pool counters written to the log), including fire riding on the thrown card (B), the flipping cards (E) and a scroll made while the engine is frozen (A): fire drawn in the card's own layer must move with the card although no engine frame runs. Headless Chromium renders WebGL in software and needs over a second per screenshot, so the script slows page time to 0.25× and freezes it while each screenshot is taken. The app is unchanged; only `performance.now()` in the page is controlled.
 
 What this proves: the public API drives the effects, and the rendering, positions and timing are right in a real Skia renderer. What it does not prove: anything about Android or iOS rendering or speed.
 
@@ -74,6 +83,6 @@ Android (the owner's Android 17 emulator, Expo Go), Windows PowerShell:
 1. `npm run example:install`
 2. `cd example`
 3. `npx expo start --clear`, then press `a`.
-4. Effects tab: go through demos A to G (checklist in the Phase 4 and 4A reports). Particles, Motion and Graphics tabs: earlier phases still work.
+4. Effects tab: go through demos A to H (checklists in the Phase 4, 4A and 4.5 reports). Particles, Motion and Graphics tabs: earlier phases still work.
 
 iOS is not verified (deferred by the owner).

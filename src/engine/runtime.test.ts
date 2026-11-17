@@ -11,7 +11,8 @@ import type { EffectHandle, EffectResult, EngineOptions, FrameEvent } from './en
 function setup(options: Partial<EngineOptions> = {}) {
   const clock = new VirtualClock(1000);
   const errors: unknown[] = [];
-  const engine = createEngine({ clock, effects: builtInEffects, seed: 11, onError: (e) => errors.push(e), ...options });
+  // These tests describe the high profile (the engine default is medium).
+  const engine = createEngine({ clock, effects: builtInEffects, seed: 11, quality: 'high', onError: (e) => errors.push(e), ...options });
   return { clock, engine, errors };
 }
 
@@ -253,6 +254,12 @@ describe('quality profiles, adaptive quality and reduced motion', () => {
       counts.push(emitterOf(engine).born);
     }
     expect(counts).toEqual([35, 65, 100]);
+  });
+
+  it('defaults to the medium profile: the most expensive one is never chosen automatically', () => {
+    const engine = createEngine({ clock: new VirtualClock(0), effects: builtInEffects });
+    expect(engine.quality.level).toBe('medium');
+    engine.dispose();
   });
 
   it('adaptive quality steps down on slow frames and back up on fast frames', () => {

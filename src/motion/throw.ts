@@ -22,6 +22,13 @@ export interface ThrowOptions extends PlayableOptions {
   /** Degrees turned during the flight. Default 360. */
   readonly rotation?: number;
   /**
+   * Depth cue: scale factor reached at the middle of the flight, as if the object came closer
+   * (1.1 = 10% larger). It rises and falls smoothly and is back to the starting scale at the
+   * impact, so the landing point and size are unchanged. Needs a numeric `scale` property on
+   * the target; ignored otherwise. Default 1 (off).
+   */
+  readonly scale?: number;
+  /**
    * When the playback is cancelled or stopped, put the target back where it started. Default
    * true, so an interrupted throw never leaves a view floating mid-air.
    */
@@ -40,6 +47,8 @@ export class ThrowMotion extends Playable {
   readonly distance: number;
   readonly drop: number;
   readonly turn: number;
+  /** Peak depth scale factor (1 = none). */
+  readonly peakScale: number;
   /** Gravity in points per second squared. */
   readonly gravity: number;
   /** Time of the peak in ms. */
@@ -48,7 +57,8 @@ export class ThrowMotion extends Playable {
   private readonly launchSpeed: number;
   private readonly restore: boolean;
   private readonly events: readonly IterationEvent[];
-  private start = { x: 0, y: 0, rotation: 0 };
+  private readonly scales: boolean;
+  private start = { x: 0, y: 0, rotation: 0, scale: 1 };
 
   constructor(
     readonly target: ThrowTarget,
@@ -69,6 +79,9 @@ export class ThrowMotion extends Playable {
     this.drop = finite(options.drop ?? 0, 'drop');
     if (this.height + this.drop < 0) throw new InvalidOptionError('throw drop must not be above the peak (height + drop >= 0).');
     this.turn = finite(options.rotation ?? 360, 'rotation');
+    this.peakScale = finite(options.scale ?? 1, 'scale');
+    if (this.peakScale <= 0) throw new InvalidOptionError('throw scale must be > 0.');
+    this.scales = this.peakScale !== 1 && target.hasProperty('scale');
     this.restore = options.restoreOnCancel ?? true;
     const up = Math.sqrt(2 * this.height);
     const down = Math.sqrt(2 * (this.height + this.drop));
@@ -97,14 +110,18 @@ export class ThrowMotion extends Playable {
     return this.total;
   }
 
-  /** Offset from the start at local time `ms` (before any target is involved). */
-  offsetAt(ms: number): Point & { rotation: number } {
+  /**
+   * Offset from the start at local time `ms` (before any target is involved); `scale` is the
+   * factor applied to the starting scale (1 at launch and impact).
+   */
+  offsetAt(ms: number): Point & { rotation: number; scale: number } {
     const t = Math.min(Math.max(ms, 0), this.total) / 1000;
     const k = this.total > 0 ? Math.min(1, Math.max(0, ms / this.total)) : 1;
     return {
       x: this.distance * k,
       y: -(this.launchSpeed * t - 0.5 * this.gravity * t * t),
       rotation: this.turn * k,
+      scale: 1 + (this.peakScale - 1) * 4 * k * (1 - k),
     };
   }
 
@@ -122,6 +139,7 @@ export class ThrowMotion extends Playable {
       x: this.target.getProperty('x'),
       y: this.target.getProperty('y'),
       rotation: this.target.getProperty('rotation'),
+      scale: this.scales ? this.target.getProperty('scale') : 1,
     };
   }
 
@@ -131,6 +149,7 @@ export class ThrowMotion extends Playable {
     this.target.setProperty('x', this.start.x + o.x);
     this.target.setProperty('y', this.start.y + o.y);
     this.target.setProperty('rotation', this.start.rotation + o.rotation);
+    if (this.scales) this.target.setProperty('scale', this.start.scale * o.scale);
   }
 
   protected override onPlaybackEnd(result: PlaybackResult): void {
@@ -138,6 +157,7 @@ export class ThrowMotion extends Playable {
       this.target.setProperty('x', this.start.x);
       this.target.setProperty('y', this.start.y);
       this.target.setProperty('rotation', this.start.rotation);
+      if (this.scales) this.target.setProperty('scale', this.start.scale);
     }
   }
 }

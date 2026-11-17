@@ -8,8 +8,57 @@
 | 3. Graphics engine, sprites, assets, RN anchoring | **Done on Android** (implemented 2026-11-12; verified by the owner on the Android 17 emulator, Expo Go, 2026-11-13). iOS not verified |
 | 4. Advanced effects, particles, shaders, composable FX | **Checked on Android by the owner, one fix pending re-check** (implemented 2026-11-13). The owner confirmed graphics and functions on the Android 17 emulator (2026-11-16) and reported effects trailing moving cards in the later demos; the fix (local effects layers) is implemented and tested, not yet re-checked on the emulator. iOS not verified. See below |
 | 4A. Effects runtime and advanced particle engine | **Implemented and tested in the container, ready for review** (2026-11-17). Not run on Android or iOS yet. See below |
+| 4.5. Visual fidelity, rendering quality, performance | **Implemented and tested in the container; visual acceptance pending** (2026-11-17). Checked with automated tests, real Skia renders (before/after) and the web build. Not run on Android or iOS; no device performance measured. See below and [PHASE_4_5_VISUAL_QUALITY_REPORT.md](PHASE_4_5_VISUAL_QUALITY_REPORT.md) |
 | 4B, 4C, 4D | Not started (not to begin without the owner) |
 | 5 and 6 | Not started (Phase 5 needs the owner's approval) |
+
+## Phase 4.5: Visual fidelity, rendering quality and performance (2026-11-17)
+
+### Status
+
+**Implemented and tested in the container; the owner's visual acceptance is pending.** The full write-up (root causes, improvements, before/after, performance, limitations) is [PHASE_4_5_VISUAL_QUALITY_REPORT.md](PHASE_4_5_VISUAL_QUALITY_REPORT.md). Nothing of Phase 4.5 has run on the Android emulator, a phone or iOS, and no device frame time was measured. Phase 4A and the c56d06f fire-lag fix are still waiting for the owner's emulator check as well.
+
+### What was done
+
+- **Audit first** (at c8a478b): every effect rendered with real Skia at fixed times, then the code behind each image. Root causes: the fire shader had no "up" (a symmetric band pointing out of every edge), its glow was a blur layer over the card, `low` replaced it with soft particle "bokeh", particle flames piled up while a card scaled (emitters rebuilt on every size change), the explosion was dominated by two flat white rings and a grey disc with no fireball and confetti-like debris, it started over the card's centre, and the default profile was the most expensive one. Resolution handling was correct (no double scaling; now tested).
+- **Fire border:** new flame shader (rising tongues and licks, tall on top, leaning sides, rotation-aware, halo inside the shader), lite shader on `low`, finer sparks, emitters reconfigured in place, new live parameters `speed`, `glowStrength`, `sparkDensity`, `coreColor`, `tipColor`.
+- **Throw & Explode:** depth cue (`throw.scale`, default 1.08 here), impact punch (`punch` 0.06), optional `trail`, explosion at the contact point (`explodeAt`), per-sequence `quality`. Cancel/replay behaviour unchanged and still tested.
+- **Explosion:** bloom, fireball, flash, thin decelerating shockwave, white-hot sparks (halo on `high`), embers, warm-to-charcoal debris, darker rising smoke; same timing on every profile; new `glow` parameter.
+- **Presets polished:** shockwave, confetti, golden sparks, smoke (new `opacity`), glow pulse, victory. No new presets.
+- **Particles:** emitter `glow` (halo pass for sparks and circles). Batching of soft particles was tried and measured slower; not adopted.
+- **Quality:** `shaderDetail` (`lite`/`full`) in profiles; engine default `medium` instead of `high`.
+- **Tools:** `npm run visual` (deterministic scenes to PNG with real Skia, `scripts/visual/`), `npm run bench:render` (CanvasKit recording and raster cost), new engine bench scenarios (repeated throws, rapid cancel/replay, long emitters, `medium`).
+- **Showcase H** (`example/QualityLab.tsx`): profiles side by side, the fire border and Throw & Explode with every visual parameter at a chosen profile, replay and cancel, a combined finale. Public API only.
+
+### Verification (commands run in the Linux cloud container, Node 22.23.4, npm 10.9.9)
+
+| Command | Result |
+| --- | --- |
+| `npm run check` (typecheck, lint, all tests, build) | **Pass: 36 suites, 441 tests, 0 failed** (428 before, 13 new; tests whose intended behaviour changed were updated, none skipped). CanvasKit prints one `RuntimeEffect error ... unknown identifier 'nope'`: the intentional broken-shader test |
+| `npm run example:install`, then `cd example` and `npx tsc --noEmit` | Pass (section H included) |
+| `cd example`, then `CI=1 EXPO_OFFLINE=1 npx expo export --platform android` | Pass (Hermes bundle, 1279 modules) |
+| `cd example`, then `CI=1 EXPO_OFFLINE=1 npx expo export --platform ios` | Pass (Hermes bundle, 1281 modules) |
+| `cd example`, then `CI=1 EXPO_OFFLINE=1 npx expo export --platform web --output-dir dist-web`, served locally, then `node scripts/capture-effects-showcase.js <folder> 2` | Pass, no page errors. 60 screenshots at 412 × 915 @2×, 18 of section H (profiles side by side, fire per profile and rotated, throw impact and aftermath on `high` and `low`, cancel, combined finale), in `phase4.5/screenshots/web/`. Active effects back to 0 at the end; the Emitter lab's counters as in 4A (the script's lab steps now stay inside the lab's card, because section H also has "Cancel" and "Violet" labels) |
+| `npm run visual`, and the same scenes rendered from the c8a478b source | 62 PNGs per version plus manifests, 12 comparison sheets; a second render is byte-identical. Project files `phase4.5/screenshots/` |
+| `npm run bench`, both versions, twice each (Node, not a device) | Fire borders unchanged within noise on `high`/`medium`, about 15× less JS on `low`; explosions about 1.3–1.8× more JS (more layers); new scenarios (repeated throws, cancel/replay, long emitters) all far below a frame and idle afterwards. Tables in PERFORMANCE.md |
+| `npm run bench:render`, both versions (CanvasKit CPU, not a GPU) | Fire shader about 1.5–1.8× the old per-pixel CPU cost; high explosions 5.1 s → 0.9 s CPU playback (no blur layers); soft-particle batching measured slower and not adopted. Tables in PERFORMANCE.md |
+
+**Not verified:** anything on the Android emulator, a phone or iOS; device frame times, GPU cost of the new fire shader, memory; visual acceptance by the owner.
+
+### Changed files
+
+- New: `example/QualityLab.tsx`, `src/renderer/skia/density.render.test.ts`, `scripts/visual/{scenes.ts,render.visual.ts,particles.renderbench.ts}`, `jest.visual.config.js`, `docs/PHASE_4_5_VISUAL_QUALITY_REPORT.md`, `docs/evidence/phase4.5/*.png` (4 comparison sheets)
+- Changed: `src/effects/{fireBorder,presets,primitives}.ts`, `src/graphics/{shaderLib,index}.ts`, `src/engine/{engine,sequences}.ts`, `src/motion/throw.ts`, `src/particles/{emitter,burst}.ts`, `src/renderer/skia/SkiaEffectsRenderer.ts`, `src/runtime/quality.ts`, their tests, `example/{EffectsDemo,ui}.tsx`, `example/package-lock.json` (tarball hash), `scripts/{effects.bench.ts,capture-effects-showcase.js}`, `package.json` (scripts), `.gitignore`, `README.md`, `docs/{EFFECTS,API,TESTING,ARCHITECTURE,PERFORMANCE,PROGRESS}.md`
+
+### Behaviour changes
+
+Listed in section 9 of the report. The ones an app notices first: default quality `medium`; `low` fire is a lite shader; Throw & Explode explodes at the contact point and adds depth and punch by default (`{ throw: { scale: 1 }, punch: 0, explodeAt: 'center' }` restores the Phase 4 behaviour); new explosion layers.
+
+### Next step
+
+1. The owner checks section H on the Android 17 emulator (steps in section 11 of the report) and gives the visual verdict on the fire border and Throw & Explode.
+2. The same session can cover the still-open 4A check (demo G) and the c56d06f re-check.
+3. Phase 5 starts only with the owner's approval.
 
 ## Phase 4A: Effects runtime and advanced particle engine (2026-11-17)
 
