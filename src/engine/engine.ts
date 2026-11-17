@@ -14,6 +14,8 @@ import type {
   EffectDefinition,
   EffectInstance,
   EffectServices,
+  TargetConcealment,
+  TargetSnapshot,
   TransformOffset,
 } from '../runtime/effect';
 import { AdaptiveQuality, resolveQuality } from '../runtime/quality';
@@ -335,6 +337,7 @@ export class Engine implements PlayableRunner {
   private readonly playbackHost: PlaybackHost;
   private unsubscribeClock: Unsubscribe | null = null;
   private nextId = 1;
+  private snapshotCount = 0;
   private currentState: EngineState = 'running';
   private lastDrawables: readonly Drawable[] = [];
   private inFrame = false;
@@ -396,6 +399,8 @@ export class Engine implements PlayableRunner {
       get capabilities() {
         return capabilities();
       },
+      concealTarget: (node, opacity) => this.concealNode(node, opacity),
+      snapshotTarget: (node) => this.snapshotNode(node),
     };
     for (const definition of options.effects ?? []) this.register(definition);
   }
@@ -458,6 +463,74 @@ export class Engine implements PlayableRunner {
     const node = this.targets.node(target);
     if (!node) throw new InvalidOptionError(`Unknown target "${target}". Mount <GameFXTarget id="${target}"> first.`);
     return node;
+  }
+
+  /** Conceals a host target's view, or hides a plain scene node (see `TargetConcealment`). */
+  private concealNode(node: SceneNode, opacity = 0): TargetConcealment | null {
+    if (node.destroyed) return null;
+    const id = this.targets.idOf(node);
+    if (id !== undefined) return this.targets.conceal(id, opacity);
+    // A node the engine draws itself: its own opacity, restored exactly on reveal.
+    const original = node.opacity;
+    const state = { opacity: Math.min(1, Math.max(0, opacity)), active: true };
+    const apply = () => {
+      if (!node.destroyed) node.opacity = original * state.opacity;
+    };
+    apply();
+    return {
+      get opacity() {
+        return state.opacity;
+      },
+      set opacity(v: number) {
+        if (!state.active || !Number.isFinite(v)) return;
+        state.opacity = Math.min(1, Math.max(0, v));
+        apply();
+      },
+      get active() {
+        return state.active;
+      },
+      reveal: () => {
+        if (!state.active) return;
+        state.active = false;
+        if (!node.destroyed) node.opacity = original;
+      },
+      vanish: () => {
+        if (!state.active) return;
+        state.active = false;
+        if (node.destroyed) return;
+        node.visible = false;
+        node.opacity = original;
+      },
+    };
+  }
+
+  /**
+   * A picture of a host target's view as an image asset, freed by `release`. Null when the node
+   * is not a host target or its host cannot take pictures. The target is measured again first,
+   * so whoever draws the picture in its place draws it where the view is now.
+   */
+  private snapshotNode(node: SceneNode): Promise<TargetSnapshot> | null {
+    const id = this.targets.idOf(node);
+    if (id === undefined || !this.targets.canSnapshot(id)) return null;
+    this.targets.requestRemeasure(id);
+    const pending = this.targets.snapshot(id);
+    if (!pending) return null;
+    return pending.then((loaded) => {
+      if (this.currentState === 'disposed') throw new DisposedError('Engine');
+      const assetId = `gamefx:snapshot:${id}:${String(++this.snapshotCount)}`;
+      const image = this.assets.addImage(assetId, loaded);
+      image.retain();
+      let released = false;
+      return {
+        image,
+        release: () => {
+          if (released) return;
+          released = true;
+          image.release();
+          if (this.currentState !== 'disposed' && this.assets.has(assetId)) this.assets.remove(assetId);
+        },
+      };
+    });
   }
 
   private addCameraOffset(): TransformOffset {

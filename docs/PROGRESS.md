@@ -9,8 +9,43 @@
 | 4. Advanced effects, particles, shaders, composable FX | **Checked on Android by the owner, one fix pending re-check** (implemented 2026-11-13). The owner confirmed graphics and functions on the Android 17 emulator (2026-11-16) and reported effects trailing moving cards in the later demos; the fix (local effects layers) is implemented and tested, not yet re-checked on the emulator. iOS not verified. See below |
 | 4A. Effects runtime and advanced particle engine | **Implemented and tested in the container, ready for review** (2026-11-17). Not run on Android or iOS yet. See below |
 | 4.5. Visual fidelity, rendering quality, performance | **Implemented and tested in the container; visual acceptance pending** (2026-11-17). Checked with automated tests, real Skia renders (before/after) and the web build. Not run on Android or iOS; no device performance measured. See below and [PHASE_4_5_VISUAL_QUALITY_REPORT.md](PHASE_4_5_VISUAL_QUALITY_REPORT.md) |
+| Burn-away effect (owner's request, 2026-11-17) | **Implemented and tested in the container; not run on a device yet** (2026-11-17). A new built-in effect: a view burns away and stays hidden. Checked with tests, real Skia renders, Android/iOS bundles and the web build (fallback only). The view capture on iOS/Android is untested. See below |
 | 4B, 4C, 4D | Not started (not to begin without the owner) |
 | 5 and 6 | Not started (Phase 5 needs the owner's approval) |
+
+## Burn-away effect (2026-11-17)
+
+### Status
+
+**Implemented and tested in the container; not run on the Android emulator, a phone or iOS.** The owner asked for "a new effect: a card disappearing by burning" and nothing else, so the three issues seen on the device run of Phase 4.5 (soft fire halo, washed-out card at impact, particles leaving the demo boxes) are recorded but not changed.
+
+### What was built
+
+- **`burn-away`** (`fx.play('burn-away', { target, from, duration, roughness, color, ... })`): on iOS and Android the target takes a picture of its view, the view is hidden, and the engine burns the picture: a ragged edge (seeded wave noise plus fine fibres) moves across the card from a side, a corner, the centre or a random point; the paper browns, chars to a dark band and glows at the rim; flames, embers, smoke and ash are emitted along the edge. When everything has burned, the view stays hidden through its motion (`motion.opacity = 0`; `motion.reset()` or a tween to opacity 1 shows it again) and the picture is freed. Cancel or stop at any moment shows the view at once. Without a picture (web, a failed or late capture) the view itself chars and fades. Scene nodes can burn too (their own image, or a char overlay). Quality `low` and reduced motion drop the smoke and ash.
+- **Engine support** (additive, existing behaviour unchanged): optional effect services `snapshotTarget` and `concealTarget`; `TargetRegistry` `setSnapshotter`, `canSnapshot`, `snapshot`, `conceal`, `concealOpacity` and a `conceal` event; shader fills with image children (`defineShader({ children })`, `{ type: 'shader', children: { image: { type: 'image', image } } }`); three shaders (`burnPaperShader`, `burnGlowShader`, `burnCharShader`).
+- **`<GameFXTarget>`**: installs the snapshotter on iOS/Android (`makeImageFromView`, local effects layer hidden for the two frames of the capture) and multiplies its opacity by the concealment.
+- **Showcase I · Burn away** (`example/BurnDemo.tsx`, right under A in the Effects tab): Burn, Cancel, Restore, origin, color, duration, roughness, "fire first" (fire border for 900 ms of engine time, then the burn), "move while burning" (the card drifts and turns while it burns), and a hand of three cards burned one after another on a timeline.
+
+### Verification (commands run in the Linux cloud container, Node 22.23.4, npm 10.9.9)
+
+| Command | Result |
+| --- | --- |
+| `npm run check` (typecheck, lint, all tests, build) | **Pass: 39 suites, 470 tests, 0 failed** (441 before, 29 new: 16 effect tests, 5 Skia render tests, 3 React Native target tests, 5 registry and shader tests). The first run failed one entry-point test that lists the built-in effect names; the new name was added to it. CanvasKit prints the intentional `unknown identifier 'nope'` |
+| `BURN_FRAMES_DIR=<folder> npx jest src/renderer/skia/burnAway.render.test.ts --selectProjects=renderer` | Pass; frames of a corner burn (200–1700 ms) and a bottom burn written as PNG. Sheet: [docs/evidence/burn-away/burn-away-sheet.png](evidence/burn-away/burn-away-sheet.png) |
+| `npm run example:install`, then `cd example` and `npx tsc --noEmit` | Pass |
+| `cd example`, then `CI=1 EXPO_OFFLINE=1 npx expo export --platform android` / `--platform ios` | Pass (Hermes bundles, 1282 and 1284 modules) |
+| `cd example`, then `CI=1 EXPO_OFFLINE=1 npx expo export --platform web --output-dir dist-web`, served locally, then `node scripts/capture-effects-showcase.js <folder> 2` | Pass, no page errors, 68 screenshots (8 new of section I: the web fallback burning and burned, restore, fire first in blue, cancel, the staggered hand). Sheet: [docs/evidence/burn-away/web-section-I.png](evidence/burn-away/web-section-I.png). The script's Cancel click in B is now scoped to B's card, because I also has a Cancel button |
+
+**Not verified:** the view capture (`makeImageFromView`) in Expo Go on Android or iOS, whether the picture lines up exactly with the view on a device (pixel density, transforms, a list scrolled without `fx.remeasure()`), device frame times, and visual acceptance by the owner. The web shows only the fallback.
+
+### Changed files
+
+- New: `src/effects/burnAway.ts`, `src/effects/burnAway.test.ts`, `src/react-native/viewSnapshot.ts`, `src/react-native/burnAway.test.tsx`, `src/renderer/skia/burnAway.render.test.ts`, `example/BurnDemo.tsx`, `docs/evidence/burn-away/*.png`
+- Changed: `src/effects/index.ts`, `src/engine/engine.ts`, `src/graphics/{shader,shaderLib,paint,index}.ts`, `src/renderer/skia/SkiaEffectsRenderer.ts`, `src/runtime/{effect,index}.ts`, `src/scene/{targets,index}.ts`, `src/react-native/GameFXTarget.tsx`, tests (`src/index.test.ts`, `src/scene/targets.test.ts`, `src/graphics/graphics.test.ts`), `example/EffectsDemo.tsx`, `example/package-lock.json` (tarball hash), `scripts/capture-effects-showcase.js`, `README.md`, `docs/{EFFECTS,API,ARCHITECTURE,PROGRESS}.md`
+
+### Next step
+
+The owner opens the Effects tab on the Android emulator, presses Burn in section I and checks that the burning picture sits exactly on the card and looks right. If the capture fails on the device, the card chars and fades instead (the fallback), which tells us the capture is the problem.
 
 ## Phase 4.5: Visual fidelity, rendering quality and performance (2026-11-17)
 

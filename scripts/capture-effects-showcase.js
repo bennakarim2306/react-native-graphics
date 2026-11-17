@@ -1,4 +1,4 @@
-// Captures the Phase 4 Effects tab (demos A–E, G and H) of the exported web build (react-native-web + CanvasKit).
+// Captures the Phase 4 Effects tab (demos A, I, B–E, G and H) of the exported web build (react-native-web + CanvasKit).
 // Headless Chromium renders WebGL in software, so a screenshot takes over a second. To capture
 // exact moments, page time (performance.now, which the engine's frame clock reads) runs at
 // 0.25x and is frozen while each screenshot is taken. The app itself is unchanged.
@@ -91,6 +91,24 @@ const scale = Number(process.argv[3] || 2);
   await page.waitForTimeout(400);
   await click('Orange'); await wait(200);
 
+  // I. Burn away (right under A). The web cannot capture views, so this is the char-and-fade fallback.
+  const burnCard = page.getByText('I · Burn away', { exact: true }).locator('xpath=..');
+  const inBurn = (text) => burnCard.getByText(text, { exact: true }).first();
+  await scrollTo('I · Burn away');
+  await inBurn('Burn').click(); await wait(700); await shot('i1-burn-fallback-700ms');
+  await wait(800); await shot('i2-burn-fallback-1500ms');
+  await wait(1200); await shot('i3-burned-away');
+  logs.push('burn status: ' + (await burnCard.getByText(/^Burned away|^Burning|^Cancelled/).first().textContent()));
+  await inBurn('Restore').click(); await wait(600); await shot('i4-restored');
+  await inBurn('Corner').click(); await inBurn('Blue').click(); await inBurn('Fire first: off').click();
+  await inBurn('Burn').click(); await wait(600); await shot('i5-fire-first-blue');
+  await wait(900); await inBurn('Cancel').click(); await wait(300); await shot('i6-cancelled-restored');
+  await inBurn('Burn the hand (staggered)').click(); await wait(900); await shot('i7-hand-staggered');
+  await wait(1500); await shot('i8-hand-burned');
+  await inBurn('Restore hand').click(); await inBurn('Fire first: on').click(); await inBurn('Orange').click(); await inBurn('Bottom').click();
+  await inBurn('Restore').click(); await wait(600); // status back to "Ready", so B's /^Cancelled/ wait is not met by I's text
+  logs.push('after I: ' + (await page.getByText(/^Active: /).first().textContent()));
+
   // B. Throw & Explode
   await scrollTo('B · Throw & Explode');
   await click('Throw & Explode'); await wait(150); await shot('b1-throw-launch');
@@ -102,7 +120,7 @@ const scale = Number(process.argv[3] || 2);
   await shotOnText(/^Settled/, 'b7-throw-settled');
   await click('vanish'); await click('Replay'); await shotOnText(/^Impact!/, 'b8-vanish-impact');
   await wait(300); await shot('b9-vanish-gone');
-  await click('Throw & Explode'); await wait(380); await click('Cancel'); await shotOnText(/^Cancelled/, 'b10-cancelled-restored');
+  await click('Throw & Explode'); await wait(380); await page.getByText('B · Throw & Explode', { exact: true }).locator('xpath=..').getByText('Cancel', { exact: true }).first().click(); await shotOnText(/^Cancelled/, 'b10-cancelled-restored');
   await click('return');
   // Fire riding on the thrown card.
   await click('Fire on card'); await wait(700);

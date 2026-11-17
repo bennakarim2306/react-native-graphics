@@ -26,7 +26,7 @@ import type {
   Skia as SkiaApi,
 } from '@shopify/react-native-skia';
 import type { NodeEffect } from '../../graphics/effects';
-import type { BlendMode, Fill, Stroke } from '../../graphics/paint';
+import type { BlendMode, Fill, ShaderImageChild, Stroke } from '../../graphics/paint';
 import type { PathData } from '../../graphics/path';
 import { shaderUniformValues } from '../../graphics/shader';
 import { displacementShader } from '../../graphics/shaderLib';
@@ -157,6 +157,7 @@ export class SkiaEffectsRenderer {
   private readonly effectCache = new Map<string, SkRuntimeEffect | null>();
   private compiles = 0;
   private readonly gradientCache = new WeakMap<object, SkShader>();
+  private readonly childCache = new WeakMap<ShaderImageChild, { native: SkImage; width: number; height: number; shader: SkShader }>();
   private readonly pathCache = new WeakMap<PathData, CachedPath>();
   private readonly reported = new Set<string>();
   private readonly particleColor = new Float32Array(4);
@@ -444,13 +445,11 @@ export class SkiaEffectsRenderer {
       drawn = this.drawImage(canvas, shape, item);
     } else {
       const fill = shape.fill ?? shape.color;
-      if (fill !== undefined) {
-        this.setupPaint(fill, item, shape, time);
+      if (fill !== undefined && this.setupPaint(fill, item, shape, time)) {
         this.drawGeometry(canvas, shape);
         drawn = true;
       }
-      if (shape.stroke) {
-        this.setupPaint(shape.stroke.fill, item, shape, time);
+      if (shape.stroke && this.setupPaint(shape.stroke.fill, item, shape, time)) {
         this.paint.setStyle(PaintStyle.Stroke);
         this.paint.setStrokeWidth(shape.stroke.width);
         this.paint.setStrokeCap(CAP[shape.stroke.cap ?? 'butt']);
@@ -510,15 +509,18 @@ export class SkiaEffectsRenderer {
     return true;
   }
 
-  /** Configures the shared paint for a fill: color, gradient or runtime shader. */
-  private setupPaint(fill: Fill, item: SceneDrawItem, shape: NodeShape, time: number): void {
+  /**
+   * Configures the shared paint for a fill: color, gradient or runtime shader. False when there
+   * is nothing to draw (a shader's child image is not available).
+   */
+  private setupPaint(fill: Fill, item: SceneDrawItem, shape: NodeShape, time: number): boolean {
     this.resetPaint();
     this.paint.setBlendMode(BLEND[item.blendMode]);
     if (typeof fill === 'string') {
       const color = this.color(fill);
       this.paint.setColor(color);
       this.paint.setAlphaf((color[3] ?? 1) * item.opacity);
-      return;
+      return true;
     }
     if (fill.type === 'shader') {
       const effect = this.runtimeEffect(fill.shader);
@@ -526,7 +528,7 @@ export class SkiaEffectsRenderer {
         const color = this.color(fill.shader.fallback);
         this.paint.setColor(color);
         this.paint.setAlphaf((color[3] ?? 1) * item.opacity);
-        return;
+        return true;
       }
       const b = shapeBounds(shape);
       const uniforms = shaderUniformValues(fill.shader, fill.uniforms, {
@@ -535,9 +537,24 @@ export class SkiaEffectsRenderer {
         height: b.height,
       });
       // Shader coordinates start at the shape's top-left corner, so `p / size` is in [0, 1].
-      this.paint.setShader(effect.makeShader(uniforms, this.skia.Matrix().translate(b.x, b.y)));
+      const local = this.skia.Matrix().translate(b.x, b.y);
+      if (fill.shader.children.length === 0) {
+        this.paint.setShader(effect.makeShader(uniforms, local));
+      } else {
+        const children: SkShader[] = [];
+        for (const name of fill.shader.children) {
+          const child = fill.children?.[name];
+          const shader = child ? this.childShader(child, b.width, b.height) : null;
+          if (!shader) {
+            this.warn('image-unavailable', child?.image.id ?? `${fill.shader.name}.${name}`);
+            return false;
+          }
+          children.push(shader);
+        }
+        this.paint.setShader(effect.makeShaderWithChildren(uniforms, children, local));
+      }
       this.paint.setAlphaf(item.opacity);
-      return;
+      return true;
     }
     let shader = this.gradientCache.get(fill);
     if (!shader) {
@@ -563,6 +580,30 @@ export class SkiaEffectsRenderer {
     }
     this.paint.setShader(shader);
     this.paint.setAlphaf(item.opacity);
+    return true;
+  }
+
+  /**
+   * The image shader for a shader fill's child: the image (or its `source` region) stretched over
+   * `rect` in shader coordinates, transparent outside. Cached per child object while its image
+   * stays the same.
+   */
+  private childShader(child: ShaderImageChild, width: number, height: number): SkShader | null {
+    const native = child.image.native as SkImage | undefined;
+    if (!native) return null;
+    const rect = child.rect ?? { x: 0, y: 0, width, height };
+    const cached = this.childCache.get(child);
+    if (cached?.native === native && cached.width === rect.width && cached.height === rect.height) return cached.shader;
+    const src = child.source ?? { x: 0, y: 0, width: child.image.width, height: child.image.height };
+    if (src.width <= 0 || src.height <= 0 || rect.width <= 0 || rect.height <= 0) return null;
+    const matrix = this.skia
+      .Matrix()
+      .translate(rect.x, rect.y)
+      .scale(rect.width / src.width, rect.height / src.height)
+      .translate(-src.x, -src.y);
+    const shader = native.makeShaderOptions(TileMode.Decal, TileMode.Decal, FilterMode.Linear, MipmapMode.None, matrix);
+    this.childCache.set(child, { native, width: rect.width, height: rect.height, shader });
+    return shader;
   }
 
   private resetPaint(): void {

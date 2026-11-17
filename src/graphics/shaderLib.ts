@@ -79,6 +79,28 @@ export const SHADER_CHUNKS: Readonly<Record<string, ShaderChunk>> = {
   return (k - 1.0) * min(r.x, r.y);
 }`,
   },
+  burnField: {
+    name: 'burnField',
+    // Mirrored exactly by burnNoise/burnField in effects/burnAway.ts, so particles can be born
+    // on the edge the shader draws. Sums of sine waves (not hashed noise) keep GPU float
+    // precision and JavaScript doubles in agreement. Needs the uniforms origin, dir, radial,
+    // amp and seed.
+    code: `float burnWave(float2 q, float a, float wavelength, float phase) {
+  return sin(dot(q, float2(cos(a), sin(a))) * (6.2831853 / wavelength) + phase);
+}
+float burnNoise(float2 q, float s) {
+  float n = 0.40 * burnWave(q, s * 0.61, 64.0, s * 2.3);
+  n += 0.26 * burnWave(q, s * 0.98 + 1.7, 37.0, s * 3.2 + 0.5);
+  n += 0.16 * burnWave(q, s * 1.35 + 3.4, 21.0, s * 4.1 + 1.0);
+  n += 0.11 * burnWave(q, s * 1.72 + 5.1, 12.5, s * 5.0 + 1.5);
+  n += 0.07 * burnWave(q, s * 2.09 + 6.8, 7.5, s * 5.9 + 2.0);
+  return 0.5 * n;
+}
+float burnField(float2 q) {
+  float d = radial > 0.5 ? length(q - origin) : dot(q - origin, dir);
+  return d + amp * burnNoise(q, seed);
+}`,
+  },
   ramp: {
     name: 'ramp',
     code: `float3 ramp4(float t, float3 a, float3 b, float3 c, float3 d) {
@@ -96,6 +118,8 @@ export interface ComposeShaderOptions {
   readonly use: readonly string[];
   /** Uniform declarations and defaults, in declaration order. */
   readonly uniforms: Readonly<Record<string, number | readonly number[]>>;
+  /** Child shaders (`uniform shader name;`), declared before the uniforms. */
+  readonly children?: readonly string[];
   /** Body of `half4 main(float2 p)`; the chunk functions are in scope. */
   readonly main: string;
   readonly fallback?: string;
@@ -117,14 +141,16 @@ export function composeShader(options: ComposeShaderOptions): ShaderDefinition {
     if (!ordered.includes(chunk)) ordered.push(chunk);
   };
   for (const name of options.use) visit(name, []);
-  const declarations = Object.entries(options.uniforms)
-    .map(([name, value]) => `uniform ${typeOf(value)} ${name};`)
-    .join('\n');
+  const declarations = [
+    ...(options.children ?? []).map((name) => `uniform shader ${name};`),
+    ...Object.entries(options.uniforms).map(([name, value]) => `uniform ${typeOf(value)} ${name};`),
+  ].join('\n');
   const source = `${declarations}\n\n${ordered.map((c) => c.code).join('\n\n')}\n\nhalf4 main(float2 p) {\n${options.main}\n}\n`;
   return defineShader({
     name: options.name,
     source,
     uniforms: options.uniforms,
+    ...(options.children ? { children: options.children } : {}),
     ...(options.fallback !== undefined ? { fallback: options.fallback } : {}),
   });
 }
@@ -244,5 +270,120 @@ export const displacementShader = composeShader({
   float2 q = p * frequency;
   float t = time * speed;
   return half4(vnoise(q + float2(0.0, t * 1.7)), vnoise(q + float2(7.3, -t * 1.3)), 0.5, 1.0);
+`,
+});
+
+const BURN_FIELD_UNIFORMS = {
+  size: [100, 100],
+  box: [100, 100],
+  margin: 0,
+  progress: 0,
+  origin: [0, 0],
+  dir: [0, -1],
+  radial: 0,
+  amp: 10,
+  seed: 0,
+  time: 0,
+  detail: 1,
+} as const;
+
+/** Fine fibres along the burning edge (not mirrored on the CPU: about ±1 point). */
+const BURN_EDGE = `
+  float2 q = p - float2(margin);
+  float s = progress - burnField(q);
+  if (detail > 0.5) s += (fbm2(q * 0.42 + float2(seed * 3.7, seed)) - 0.375) * 3.0;
+`;
+
+/**
+ * A picture burning away (the `burn-away` effect's paper pass, normal blending). The child
+ * `image` is the picture, placed by the fill; the shape is the picture plus `margin` on each
+ * side. Ahead of the burning edge the picture browns and chars over `charWidth` points, the
+ * edge glows (`rimWidth`, `rimColor`), behind it the picture is gone. Uniforms of the edge:
+ * - `progress`: how far the edge has travelled, in points along the burn
+ * - `origin`, `dir`, `radial`: a straight edge moving along `dir` from `origin`, or (radial 1)
+ *   a circle growing from `origin`; card coordinates (points from its top-left corner)
+ * - `amp`: how ragged the edge is, in points; `seed`: its pattern
+ * - `detail`: 1 adds fibres and flicker, 0 is the cheaper low-quality edge
+ */
+export const burnPaperShader = composeShader({
+  name: 'burn-paper',
+  use: ['burnField', 'fbm2', 'noise'],
+  fallback: '#00000000',
+  children: ['image'],
+  uniforms: { ...BURN_FIELD_UNIFORMS, charWidth: 14, rimWidth: 3, charColor: [0.17, 0.1, 0.05], rimColor: [1, 0.48, 0.1] },
+  main: `${BURN_EDGE}
+  half4 c = image.eval(p);
+  float inside = clamp(q.x + 0.5, 0.0, 1.0) * clamp(box.x - q.x + 0.5, 0.0, 1.0) * clamp(q.y + 0.5, 0.0, 1.0) * clamp(box.y - q.y + 0.5, 0.0, 1.0);
+  float a0 = float(c.a) * inside;
+  float keep = 1.0 - smoothstep(-0.7, 0.7, s);
+  if (a0 < 0.002 || keep <= 0.0) return half4(0.0);
+  float3 col = float3(c.rgb) / max(float(c.a), 0.0001);
+  float k = clamp(1.0 + s / charWidth, 0.0, 1.0);
+  // Browning far ahead, a black charred band just ahead of the glowing edge.
+  col = mix(col, col * float3(0.8, 0.64, 0.46), smoothstep(0.0, 0.5, k));
+  col = mix(col, charColor, smoothstep(0.3, 0.8, k));
+  float rim = smoothstep(-rimWidth, 0.0, s);
+  float flick = detail > 0.5 ? 0.7 + 0.3 * vnoise(q * 0.18 + float2(seed, time * 5.0)) : 0.85;
+  col = mix(col, rimColor, clamp(rim * rim * flick * 1.15, 0.0, 1.0));
+  float a = a0 * keep;
+  return half4(half3(col * a), half(a));
+`,
+});
+
+/**
+ * Light of a burning edge (the `burn-away` effect's glow pass, additive): a hot line on the
+ * edge, a soft halo that may spill past the outline (a rounded rectangle of `box` and
+ * `cornerRadius`), dying embers just behind the edge and flickering glints. Same edge uniforms
+ * as `burnPaperShader`; `intensity` and `fade` scale the light.
+ */
+export const burnGlowShader = composeShader({
+  name: 'burn-glow',
+  use: ['burnField', 'fbm2', 'noise', 'sdRoundRect'],
+  fallback: '#00000000',
+  uniforms: { ...BURN_FIELD_UNIFORMS, rimWidth: 3, cornerRadius: 10, rimColor: [1, 0.48, 0.1], coreColor: [1, 0.9, 0.6], intensity: 1, fade: 1 },
+  main: `${BURN_EDGE}
+  float od = sdRoundRect(q - box * 0.5, box * 0.5, min(cornerRadius, min(box.x, box.y) * 0.5));
+  float onPaper = 1.0 - smoothstep(-0.5, 0.8, od);
+  float near = 1.0 - smoothstep(0.0, max(margin, 1.0), od);
+  float w2 = rimWidth * rimWidth;
+  float rim = exp(-(s * s) / (w2 * 0.9)) * onPaper;
+  // The light reaches less far over the paper than into the burned side, so the char stays dark.
+  float sh = s < 0.0 ? s * 2.2 : s;
+  float halo = exp(-(sh * sh) / (w2 * 10.0)) * 0.18 * near;
+  float after = s > 0.0 ? exp(-s / (rimWidth * 0.8)) * 0.35 * onPaper : 0.0;
+  float flick = detail > 0.5 ? 0.65 + 0.35 * vnoise(q * 0.12 + float2(seed * 1.3, time * 4.0)) : 0.85;
+  // Glowing specks in the char just ahead of the edge, round and flickering.
+  float glint = 0.0;
+  if (detail > 0.5 && s > -rimWidth * 2.5 && s < 0.0) {
+    float2 cq = q * 0.8;
+    float speck = 1.0 - smoothstep(0.12, 0.42, length(fract(cq) - 0.5));
+    glint = step(0.97, hash21(floor(cq) + float2(floor(time * 7.0), seed))) * speck * 0.9 * onPaper;
+  }
+  float e = clamp((rim * 1.1 + halo + after + glint) * flick * intensity * fade, 0.0, 1.0);
+  float3 col = mix(rimColor, coreColor, clamp(rim * 0.9, 0.0, 1.0));
+  return half4(half3(col * e), half(e));
+`,
+});
+
+/**
+ * Charring drawn over a view that cannot be burned away (no picture of it): ahead of the edge
+ * it scorches, behind it the view turns black. Normal blending, clipped to the rounded
+ * rectangle of `box` and `cornerRadius`. Same edge uniforms as `burnPaperShader`.
+ */
+export const burnCharShader = composeShader({
+  name: 'burn-char',
+  use: ['burnField', 'fbm2', 'noise', 'sdRoundRect'],
+  fallback: '#00000000',
+  uniforms: { ...BURN_FIELD_UNIFORMS, charWidth: 14, cornerRadius: 10, charColor: [0.17, 0.1, 0.05] },
+  main: `${BURN_EDGE}
+  float od = sdRoundRect(q - box * 0.5, box * 0.5, min(cornerRadius, min(box.x, box.y) * 0.5));
+  float onPaper = 1.0 - smoothstep(-0.5, 0.5, od);
+  float k = clamp(1.0 + s / charWidth, 0.0, 1.0);
+  float burnt = smoothstep(-0.6, 0.6, s);
+  float a = max(k * k * 0.75, burnt * 0.96) * onPaper;
+  if (a <= 0.0) return half4(0.0);
+  float3 col = mix(float3(0.42, 0.26, 0.12), charColor, smoothstep(0.3, 1.0, k));
+  if (detail > 0.5) col *= 0.85 + 0.3 * vnoise(q * 0.3 + float2(seed, 0.0));
+  return half4(half3(col * a), half(a));
 `,
 });

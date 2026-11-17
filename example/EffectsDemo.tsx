@@ -1,5 +1,5 @@
 /**
- * Phase 4 "GameFX Effects Showcase": demos A–H for the composable effects system.
+ * Phase 4 "GameFX Effects Showcase": demos A–I for the composable effects system.
  *
  * A. Fire border on an ordinary view: on/off, intensity, flame height, color, move, rotate, scale.
  * B. Throw & Explode: the real view is thrown, explodes at the impact, shakes, then settles.
@@ -11,6 +11,7 @@
  *    pause/resume/stop/cancel, emitters on moving scene nodes, cleanup when the target goes.
  * H. Visual quality comparison (QualityLab.tsx, Phase 4.5): low / medium / high side by side,
  *    the fire border and Throw & Explode with every visual parameter, a combined finale.
+ * I. Burn away (BurnDemo.tsx, shown right after A): a card view burns away and stays hidden.
  *
  * Only the public `react-native-graphics` entry point is used. Views move through their
  * transform binding (`fx.getTarget(id).motion`), so effects stay attached while they fly,
@@ -23,6 +24,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { GameFXTarget, useGameFX, useGameFXEngine } from 'react-native-graphics';
+import { BurnDemo } from './BurnDemo';
 import { EmitterLab } from './EmitterLab';
 import { PerfDemo } from './PerfDemo';
 import { QualityLab } from './QualityLab';
@@ -437,6 +439,7 @@ export function EffectsDemo() {
         }}
       >
         <FireBorderDemo />
+        <BurnDemo />
         <ThrowDemo />
         <PlaygroundDemo />
         <GalleryDemo />

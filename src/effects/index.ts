@@ -1,5 +1,7 @@
 import type { EffectDefinition } from '../runtime/effect';
 import { energyBorder, glowBorder } from './border';
+import { burnAway } from './burnAway';
+import type { BurnAwayParams } from './burnAway';
 import type { GlowBorderParams, ShaderBorderParams } from './border';
 import { fireBorder } from './fireBorder';
 import type { FireBorderParams } from './fireBorder';
@@ -21,6 +23,8 @@ import type { FlashParams, ParticlesParams, ScreenShakeParams, ShockwaveParams }
 export { DEFAULT_BURST_COLORS, particleBurst, resolveBurstParams } from './particleBurst';
 export type { FromTo, ParticleBurstParams, Range } from './particleBurst';
 export { energyBorder, glowBorder } from './border';
+export { BurnAwayInstance, burnAway, burnField, burnFront, burnGeometry, burnNoise, burnProgress, burnRange } from './burnAway';
+export type { BurnAwayParams, BurnGeometry, BurnOrigin } from './burnAway';
 export type { BorderParams, GlowBorderParams, ShaderBorderParams } from './border';
 export { FireBorderInstance, fireBorder } from './fireBorder';
 export type { FireBorderParams, FireBorderShape } from './fireBorder';
@@ -70,6 +74,7 @@ export interface BuiltInEffects {
   'glow-pulse': GlowPulseParams;
   explosion: ExplosionParams;
   victory: VictoryParams;
+  'burn-away': BurnAwayParams;
 }
 
 /** All built-in effect definitions, registered by default by `GameFXProvider`. */
@@ -89,4 +94,5 @@ export const builtInEffects: readonly EffectDefinition<never>[] = [
   glowPulse,
   explosion,
   victory,
+  burnAway,
 ];

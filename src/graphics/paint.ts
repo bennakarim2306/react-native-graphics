@@ -1,5 +1,7 @@
+import type { ImageAsset } from '../assets/assets';
 import { InvalidOptionError } from '../runtime/errors';
 import type { Point } from '../scene/matrix';
+import type { Rect } from './path';
 import type { ShaderDefinition } from './shader';
 
 /** A CSS-style color string understood by the renderer, for example `#FFAA00`, `rgba(...)`. */
@@ -33,6 +35,25 @@ export interface ShaderFill {
   readonly type: 'shader';
   readonly shader: ShaderDefinition;
   readonly uniforms?: Readonly<Record<string, number | readonly number[]>>;
+  /**
+   * One image per child the shader declares (`ShaderDefinition.children`), sampled in the
+   * shader with `name.eval(p)`. Keep the same object across frames: the renderer caches the
+   * image shader per object.
+   */
+  readonly children?: Readonly<Record<string, ShaderImageChild>>;
+}
+
+/**
+ * An image a shader samples. Outside `rect` it is transparent. Coordinates are the shader's
+ * own: points from the shape's top-left corner.
+ */
+export interface ShaderImageChild {
+  readonly type: 'image';
+  readonly image: ImageAsset;
+  /** Where the image (or `source`) is drawn, in shader coordinates. Default: the whole shape. */
+  readonly rect?: Rect;
+  /** Region of the image in image pixels. Default: the whole image. */
+  readonly source?: Rect;
 }
 
 export type Fill = Color | LinearGradient | RadialGradient | ShaderFill;
@@ -148,10 +169,32 @@ export function validateFill(fill: Fill, what = 'fill'): void {
           throw new InvalidOptionError(`${what}: uniform "${name}" must be finite.`);
         }
       }
+      validateChildren(s, what);
       return;
     }
     default:
       throw new InvalidOptionError(`Unknown ${what} type "${String(type)}".`);
+  }
+}
+
+function validateChildren(fill: ShaderFill, what: string): void {
+  const declared = fill.shader.children;
+  const given = fill.children ?? {};
+  for (const name of Object.keys(given)) {
+    if (!declared.includes(name)) throw new InvalidOptionError(`${what}: shader "${fill.shader.name}" has no child "${name}".`);
+  }
+  for (const name of declared) {
+    const child = given[name];
+    if (child === undefined) throw new InvalidOptionError(`${what}: shader "${fill.shader.name}" needs an image for child "${name}".`);
+    if ((child as { type?: unknown }).type !== 'image' || typeof child.image !== 'object' || (child.image as { kind?: unknown } | null)?.kind !== 'image') {
+      throw new InvalidOptionError(`${what}: child "${name}" must be { type: 'image', image: ImageAsset }.`);
+    }
+    for (const [key, r] of [['rect', child.rect], ['source', child.source]] as const) {
+      if (r === undefined) continue;
+      if (![r.x, r.y, r.width, r.height].every(Number.isFinite) || r.width <= 0 || r.height <= 0) {
+        throw new InvalidOptionError(`${what}: child "${name}" ${key} needs finite x, y and a positive size.`);
+      }
+    }
   }
 }
 
