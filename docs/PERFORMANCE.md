@@ -1,6 +1,39 @@
 # Performance
 
-**No device measurements exist yet.** Phases 1 to 4.5 have run in Node (Jest), real Skia through CanvasKit (Jest), Chromium (web build) and, for Phases 1 to 3, an Android 17 emulator in Expo Go without timing. None of this says anything about frame times on Android or iOS, so no device FPS, memory or GPU numbers are reported. Phase 4 adds the tools to take them: the same benchmark scenarios as buttons in the showcase with a live frame meter (procedure below).
+**No device measurements exist yet.** Phases 1 to 5 have run in Node (Jest), real Skia through CanvasKit (Jest), headless Chromium (web builds) and, for Phases 1 to 4.5, an Android 17 emulator and device in Expo Go without timing. None of this says anything about frame times on Android or iOS, so no device FPS, memory or GPU numbers are reported. The consumer app's benchmark screen (Phase 5, below) and the showcase's section F are the tools to take them. This environment has no Android emulator (no KVM, no Android SDK), so the device runs are the owner's.
+
+## Phase 5: release benchmark scenarios
+
+The release brief lists nine scenarios. Each is a button on the consumer app's screen **H · Performance** (`consumer/src/screens/BenchmarkScreen.tsx`), and the Node suite covers the engine side of each:
+
+| # | Brief scenario | Consumer app button (fixed duration) | Node benchmark row (engine side, 2026-11-17) |
+| --- | --- | --- | --- |
+| 1 | One fire border | `1 · One fire border` (10 s) | 1 fire border (high): avg 0.048 ms, p95 0.060 ms |
+| 2 | Ten fire borders | `2 · Ten fire borders` (10 s) | 10 fire borders: high avg 0.287 / p95 0.386 ms; medium 0.232 / 0.356 ms; low 0.074 / 0.097 ms |
+| 3 | One throw | `3 · One throw & explode` (4 s) | repeated throw & explode, 3 cards: high avg 1.504 / p95 2.681 ms; low 0.436 / 0.987 ms |
+| 4 | Five explosions | `4 · Five explosions` (5 s) | 5 explosions of 150: high avg 0.949 / p95 3.279 ms (1230 particles); medium 0.718 / 2.159 ms; low 0.211 / 0.802 ms |
+| 5 | Fifty sprites | `5 · Fifty animated sprites` (10 s) | 50 sprites, 10 trails, 10 glow pulses: avg 0.957 / p95 1.211 ms |
+| 6 | Multiple emitters | `6 · Six continuous emitters` (10 s) | long emitters, 120 s: high avg 0.163 / p95 0.248 ms; low 0.074 / 0.125 ms |
+| 7 | Cancel / replay | `7 · Cancel + replay ×40` (9 s) | rapid cancel/replay every 5 frames: avg 0.097 / p95 0.125 ms, view restored, idle afterwards |
+| 8 | Continuous for minutes | `8 · Continuous mix (3 min)` | continuous minutes 1, 2, 3: avg 0.394, 0.405, 0.410 ms; particles stable at about 370 |
+| 9 | Navigation while active | `9 · Navigate ×5 while active` | no Node equivalent (needs React Navigation); the Jest lifecycle test 2 checks cleanup, not timing |
+
+Node numbers: `npm run bench`, Node 22.23.4, Linux x64 cloud container (4 vCPU), 2026-11-17. They are JavaScript engine work only and are **not** a substitute for device measurements.
+
+What the consumer's benchmark screen reports per scenario (on screen and as one `[gamefx-bench] {...}` JSON line in the Expo terminal): platform and OS version, `dev` (development or release JavaScript), quality, reduced motion, duration, frames, FPS of the effects loop and interval avg / p95 / worst, the share of frames slower than 25 ms, JS work per frame avg / p95, peak particle count, and whether the engine counters returned to their starting values afterwards (and how long the graceful endings took). "Run 1–7" runs the first seven in a row (about 70 s).
+
+Only measured off-device so far: one smoke-test run of scenario 3 in headless Chromium (software WebGL) reported 60 FPS, 0.27 ms JS work and a clean end. That checks the meter, not phone performance.
+
+### Device procedure (owner, Windows PowerShell, one line at a time)
+
+1. `npm run consumer:install`
+2. `cd ..\gamefx-consumer-test`
+3. `npx expo start --clear`, then press `a` (Android emulator, Expo Go).
+4. Screen **G**: choose the quality (`medium` is the default). Screen **H**: press "Run 1–7", then 8 and 9.
+5. Copy the `[gamefx-bench]` lines from the terminal. For the UI/render thread: `adb shell dumpsys gfxinfo host.exp.exponent reset` before a scenario and `adb shell dumpsys gfxinfo host.exp.exponent` after it ("Janky frames", 50th/90th/95th/99th percentiles). Memory: `adb shell dumpsys meminfo host.exp.exponent` before and after scenario 8.
+6. Record the device or emulator model, Android version and that this is Expo Go development JavaScript. For production JavaScript in Expo Go: `npx expo start --no-dev --minify`.
+
+Visual quality from Phase 4.5 is unchanged in Phase 5: no effect code changed. The visual regression scenes (`npm run visual`) and the showcase's 68-screenshot web capture were re-run (both pass, no page errors), and a spot check of the screenshots matched the Phase 4.5 look; no pixel diff against the earlier images was made.
 
 ## Phase 4.5: before and after, engine side and drawing side (Node, not a device)
 

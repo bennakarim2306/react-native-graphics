@@ -10,6 +10,9 @@ permissions:
 
 jobs:
   check:
+    # Type-check, lint, unit/integration/API-contract tests, then build, pack and validate the
+    # package: contents, entry points, declarations against scripts/public-api.json, and an
+    # install into an empty project that loads ./core with require and import.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,11 +24,16 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test -- --ci
-      - run: npm run build
+      - run: npm run pack:verify -- --report pack-report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-report
+          path: pack-report.json
+          retention-days: 14
 
   example:
-    # Consumer contract: the showcase installs the packed SDK tarball and must type-check
-    # and bundle for Android and iOS using only the public entry point.
+    # The showcase installs the packed SDK tarball and must type-check and bundle for Android
+    # and iOS using only the public entry point.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +41,9 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            example/package-lock.json
       - run: npm ci
       # Packs the SDK and installs that exact tarball by path, so the lockfile's integrity
       # entry is refreshed for the new pack instead of failing with EINTEGRITY.
@@ -49,3 +60,53 @@ jobs:
         env:
           CI: '1'
           EXPO_OFFLINE: '1'
+
+  consumer:
+    # The independent consumer app, created outside the repository checkout and installed from
+    # the packed tarball: type-check, import isolation, Android/iOS/web bundles and a headless
+    # web smoke test of every demo screen (React Native Web, not a device).
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "CONSUMER_DIR=$RUNNER_TEMP/gamefx-consumer-test" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            consumer/package-lock.json
+      - run: npm ci
+      - run: npm run consumer:install -- "$CONSUMER_DIR"
+      - run: npm run typecheck
+        working-directory: ${{ env.CONSUMER_DIR }}
+      - run: npm run check:imports
+        working-directory: ${{ env.CONSUMER_DIR }}
+      - run: npm run export:android
+        working-directory: ${{ env.CONSUMER_DIR }}
+        env:
+          CI: '1'
+          EXPO_OFFLINE: '1'
+      - run: npm run export:ios
+        working-directory: ${{ env.CONSUMER_DIR }}
+        env:
+          CI: '1'
+          EXPO_OFFLINE: '1'
+      - run: npm run export:web
+        working-directory: ${{ env.CONSUMER_DIR }}
+        env:
+          CI: '1'
+          EXPO_OFFLINE: '1'
+      - name: Web smoke test
+        working-directory: ${{ env.CONSUMER_DIR }}
+        run: |
+          npm install --no-save --no-audit --no-fund playwright@1.63.0
+          npx playwright install --with-deps chromium
+          npm run test:web
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: consumer-web-smoke
+          path: ${{ env.CONSUMER_DIR }}/web-smoke-out
+          retention-days: 14
+          if-no-files-found: ignore

@@ -201,10 +201,20 @@ Details and examples: [EFFECTS.md](EFFECTS.md).
 
 ## Packaging and consumer contract
 
-- Native libraries (`react`, `react-native`, `@shopify/react-native-skia`, `react-native-reanimated`, `react-native-worklets`) become **peer dependencies**. The SDK does not bundle them.
-- Version baseline proposed from Expo SDK 58 (current on 2026-11-11): React Native 0.88.1, React 19.3.0, Reanimated 4.7.1, Worklets 0.13.0, Skia 2.14.0. Reanimated 4 requires the New Architecture.
-- A **separate example app** (`example/`) installs the SDK from the `npm pack` tarball and imports only `react-native-graphics`. CI packs the SDK, installs it into the example, type-checks it and bundles it for Android and iOS, so private paths cannot leak into the contract.
+- Native libraries (`react`, `react-native`, `@shopify/react-native-skia`, `react-native-reanimated`; `react-native-worklets` through Reanimated) are **peer dependencies**. The SDK has no runtime dependencies and no native code.
+- Peer ranges start at the versions that were tested (Expo SDK 58: React Native 0.88.1, React 19.3.0, Reanimated 4.7.1, Worklets 0.13.0, Skia 2.14.0). Reanimated 4 requires the New Architecture.
+- **Build (Phase 5):** `scripts/build.mjs` writes three trees from `src/`: `lib/module` (ES modules and source maps, compiled by `tsc` with full type-checking), `lib/commonjs` (each file transpiled on its own to CommonJS, for Node, Jest and `require`) and `lib/typescript` (declarations and declaration maps). `src/` ships without tests so the maps resolve. `exports` conditions: `types`, then `react-native`, `browser` and `module` (ES modules for Metro and bundlers), then `default` (CommonJS). Deep imports are blocked.
+- **Public surface:** `src/index.ts` and `src/core.ts` list their exports explicitly; `scripts/public-api.json` pins the names and is checked by Jest and by `npm run pack:verify`. Everything else is internal.
+- **Consumer contract:** two separate apps install the SDK from the `npm pack` tarball and import only the entry points: the showcase (`example/`, development tool) and the consumer test app (`consumer/`, installed outside the repository by `npm run consumer:install`, with an import-isolation check and a headless web smoke test). CI runs both, so private paths cannot leak into the contract.
 - Entry points: `react-native-graphics` (everything) and `react-native-graphics/core` (no React Native, React or Skia imports).
+- Versioning and release steps are in [RELEASE.md](RELEASE.md).
+
+## Lifecycle rules (Phase 5)
+
+- The provider owns one engine; unmounting it disposes everything.
+- A target that unmounts destroys its proxy node: attached effects drain and complete, sequences on it cancel, tweens and keyframes of its `motion` end with `targetDestroyed` on the next frame. Timelines are not ended by a destroyed object (they can involve other objects and cues).
+- `pauseInBackground` pauses the engine through `AppState` and resumes only what it paused.
+- `engine.stats` exposes the counters that leak tests compare (effects, playbacks, nodes, targets, local layers, frame loop, images).
 
 ## What carries over from the earlier card-SDK design
 

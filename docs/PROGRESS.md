@@ -11,7 +11,66 @@
 | 4.5. Visual fidelity, rendering quality, performance | **Implemented and tested in the container; visual acceptance pending** (2026-11-17). Checked with automated tests, real Skia renders (before/after) and the web build. Not run on Android or iOS; no device performance measured. See below and [PHASE_4_5_VISUAL_QUALITY_REPORT.md](PHASE_4_5_VISUAL_QUALITY_REPORT.md) |
 | Burn-away effect (owner's request, 2026-11-17) | **Implemented and tested in the container; not run on a device yet** (2026-11-17). A new built-in effect: a view burns away and stays hidden. Checked with tests, real Skia renders, Android/iOS bundles and the web build (fallback only). The view capture on iOS/Android is untested. See below |
 | 4B, 4C, 4D | Not started (not to begin without the owner) |
-| 5 and 6 | Not started (Phase 5 needs the owner's approval) |
+| 5. SDK packaging, independent integration, API stabilization, release readiness | **Implemented but not yet fully validated** (2026-11-17). Release candidate `0.1.0-rc.0` built, packed, validated and installed into an independent consumer app; all automated checks pass and the consumer ran end to end on the web. Not yet run on Android (owner's emulator) or iOS; no device performance measured. See below |
+| 6 | Not started (not to begin without the owner) |
+
+## Phase 5: SDK packaging and release readiness (2026-11-17)
+
+### Status
+
+**Implemented but not yet fully validated.** Everything the brief asks for is implemented and passes automated checks in the container. Three acceptance criteria need a device and are open: Android runtime of the consumer app (15), iOS (16, explicitly pending: deferred by the owner) and device performance numbers (17 is documented, but only with Node and web numbers). Branch `claude/phase-5-sdk-release`, based on `claude/project-thread-5mm4qx` (PR #4, `burn-away`), which is based on `main` after PR #3 (Phases 2 to 4.5) was merged.
+
+Baseline: the starting commit (ceb064a, PR #4) passed `npm run check` with 39 suites and 470 tests and its CI was green; no baseline failures were carried into Phase 5.
+
+### What was done
+
+- **Packaging:** version `0.1.0-rc.0` (`private: true` and `UNLICENSED` kept); ES modules, CommonJS and declarations with maps (`scripts/build.mjs`, `tsconfig.build*.json`); `exports` with `types`/`react-native`/`browser`/`module`/`default` conditions for `.` and `./core`, deep imports blocked; `files` limited to `lib/`, `src/` without tests, README, CHANGELOG; `sideEffects: false`; peer ranges narrowed to the tested versions; no runtime dependencies, no install scripts.
+- **Package validation:** `scripts/verify-package.mjs` (`npm run pack:verify`, part of `npm run check` and CI) and `scripts/public-api.mjs` with the pinned export list `scripts/public-api.json`.
+- **Public API:** explicit export lists (19 internal helpers and 3 internal types no longer exported), `NotReadyError`, `DEFAULT_QUALITY`, `CustomEffectName`, `engine.stats`, `<GameFXProvider pauseInBackground>`, typed parameters for built-in names in every overload (a type hole let misspelled parameters through), union-friendly `attach` parameters. Details and migration notes in [CHANGELOG.md](../CHANGELOG.md).
+- **Lifecycle fix found by the consumer app:** an endless animation of a `<GameFXTarget>` (`fx.animate(id, { repeat: Infinity })`) kept running after the view unmounted, so the frame loop never stopped and each visit of a screen added one more. Reproduced with a failing test, fixed in the engine's frame loop (tweens and keyframes of a destroyed object end with `targetDestroyed`), regression tests added in `playback.test.ts` and `lifecycle.test.tsx`. The existing test that expected such a tween to "complete" now expects `cancelled`/`targetDestroyed` (behaviour change, listed in the changelog).
+- **Other fixes:** `fx.quality` before ready reported `high` (default is `medium`); explicit `'worklet'` directives in `<GameFXTarget>`'s animated styles.
+- **Tests:** ten release lifecycle scenarios with real components (`lifecycle.test.tsx`), public API contract tests, a type-level API test (`apiTypes.test.tsx`).
+- **Consumer app** `gamefx-consumer-test` (`consumer/`, installed outside the repository by `scripts/install-consumer.mjs`): screens A to H, import-isolation check, headless web smoke test, benchmark screen for the nine brief scenarios.
+- **CI:** `check` job now ends with `pack:verify`; new `consumer` job (fresh tarball into the runner's temp folder, typecheck, import check, Android/iOS/web bundles, web smoke test with Playwright 1.63.0); npm cache per lockfile.
+- **Docs:** README, INSTALLATION (new), API, EFFECTS (per-effect reference), COMPATIBILITY (new), PERFORMANCE, TESTING, TROUBLESHOOTING (new), RELEASE (new), ARCHITECTURE, CHANGELOG (new).
+
+### Verification (Linux cloud container, Node 22.23.4, npm 10.9.9)
+
+| Command | Result |
+| --- | --- |
+| `npm run check` (typecheck, lint, all Jest projects, `pack:verify`) | **Pass: 42 suites, 488 tests, 0 failed.** Package OK: 7 entry points, public API matches (127 values, 170 types at the root; 118 and 155 in `/core`), `./core` loads in Node with `require` and `import`, deep imports blocked. CanvasKit prints the intentional `unknown identifier 'nope'` |
+| `npx jest src/engine/playback.test.ts --selectProjects=core` before the fix | **Fail** (2 tests: the endless tween and keyframes never ended, 5 s timeout), reproducing the leak |
+| same, and `npx jest src/react-native/lifecycle.test.tsx --selectProjects=react-native`, after the fix | Pass (34 and 11 tests) |
+| `npm pack --dry-run` | 508 files, 423 KiB packed, 2613 KiB unpacked: `lib/module`, `lib/commonjs`, `lib/typescript` (144 files each), `src/` (73 files, no tests), README, CHANGELOG, package.json |
+| `npm pack` | `react-native-graphics-0.1.0-rc.0.tgz`, SHA-256 `9801440b6e1e97cc88a8495fe3c63fadb252a478da3658eb0a595e2ad9f69932` (copy in the project files under `phase5/`) |
+| `npm run consumer:install -- <temp folder>` (fresh folder, as CI does), then in it `npm run typecheck`, `npm run check:imports`, `npm run export:android`, `export:ios`, `export:web`, `npm run test:web` | **All pass.** 17 files scanned, 20 SDK imports, only public entry points, tarball install. Android bundle: Hermes bytecode, 1524 modules. Web smoke: **23 of 23 checks**, including navigation ×10 (PASS after 2.1 s) and provider remount ×20 (20 engines disposed cleanly), no page errors. Screenshots: [docs/evidence/phase5/consumer-web-smoke.png](evidence/phase5/consumer-web-smoke.png) |
+| First web smoke run, before the fix | 21 of 23: the navigation self-test and one benchmark clean-up check failed; this is how the leak was found |
+| `npm run example:install`, then `cd example`, `npx tsc --noEmit` | First run: **fail** (TS2769 in `GraphicsDemo.tsx`: a union of effect names no longer fit the stricter overloads). Fixed with distributive parameter types and a type test; then pass |
+| `cd example`, then `CI=1 EXPO_OFFLINE=1 npx expo export --platform android` / `ios` / `web` | Pass (1282, 1284 and 968 modules) |
+| `node scripts/capture-effects-showcase.js <folder> 1` against the showcase's web build | Pass, 68 screenshots, no page errors (Phase 4.5 visuals spot-checked, unchanged) |
+| `npm run visual` | Pass |
+| `npm run bench` | Pass; numbers in [PERFORMANCE.md](PERFORMANCE.md#phase-5-release-benchmark-scenarios) (Node, not a device) |
+| `npm audit` (root, example, consumer) and `npm audit --omit=dev` (root) | Runtime: **0 advisories** (the SDK has no dependencies). Tooling: picomatch ReDoS (GHSA-fc5q-39xc-vjpf, high), minimatch DoS (GHSA-g3hv-75wg-m249) and glob (GHSA-3g3m-2fjr-6pw4), moderate, all in build and test tools (Metro, Expo CLI, Jest, ESLint, React Native's codegen); they process the developer's own files, not user input. `npm audit fix` would move Reanimated and Worklets off the versions Expo SDK 58 pins, so it was not applied |
+| License review of the consumer's installed tree | MIT 486, ISC 32, BSD 12, Apache-2.0 6, BlueOak 3, others single; MPL-2.0 only in `lightningcss` (Expo CLI build tool, not bundled into apps); `node-forge` dual BSD/GPL (Expo CLI). Peers: Skia, Reanimated, Worklets, React, React Native are MIT. Demo sprite: generated by `scripts/generate-demo-sprites.py` |
+| Secrets, `.env` files, network APIs, install scripts | None found. The only network use is Skia loading an image from a URL that the app itself registers |
+
+### Not verified
+
+- The consumer app on Android (Expo Go on the owner's emulator) and on iOS.
+- Device performance: no FPS, frame-time, memory or CPU numbers from a phone or emulator. This container has no Android emulator (no KVM, no Android SDK).
+- Bare React Native, development builds, release builds, other package managers, Windows for the new scripts.
+- The CI changes run for the first time on the pull request.
+
+### Release blockers (for publishing, not for reviewing the candidate)
+
+1. Owner decisions: package name (`react-native-graphics` was used and unpublished on npm in 2022), license, registry.
+2. Android run of the consumer app and device benchmark numbers.
+3. iOS run, or release notes that say iOS is unverified.
+4. The three visual issues from the Phase 4.5 device check (soft fire halo, washed-out card at impact, particles leaving the demo boxes) are open by the owner's choice.
+
+### Next action
+
+The owner runs the consumer app on the Android emulator (steps in [TESTING.md](TESTING.md#device-checks) and [PERFORMANCE.md](PERFORMANCE.md#device-procedure-owner-windows-powershell-one-line-at-a-time)) and reviews the pull request.
 
 ## Burn-away effect (2026-11-17)
 

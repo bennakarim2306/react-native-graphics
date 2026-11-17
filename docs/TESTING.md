@@ -6,8 +6,10 @@ How the SDK is tested, what each layer proves, and how to run it. Commands are f
 
 | Command | What it does |
 | --- | --- |
-| `npm run check` | Typecheck, lint, all tests, build. Run before every commit |
-| `npm test` | All Jest projects (about 400 tests, 30 s) |
+| `npm run check` | Typecheck, lint, all tests, then `pack:verify` (which builds). Run before every commit |
+| `npm test` | All Jest projects (488 tests in 42 files, about 50 s) |
+| `npm run pack:verify` | Builds, packs and validates the package (section "Package validation") |
+| `npm run consumer:install [folder]` | Creates the consumer test app outside the repository (default `../gamefx-consumer-test`) with a fresh tarball (section "Consumer app") |
 | `npx jest --selectProjects core` | Engine only (Node, no React Native) |
 | `npx jest --selectProjects renderer` | Skia renderer against real CanvasKit |
 | `npx jest --selectProjects react-native` | React Native components and hooks |
@@ -34,6 +36,58 @@ How the SDK is tested, what each layer proves, and how to run it. Commands are f
 - **No mocked algorithms.** Particle simulation, emitter shapes, curves, timelines, the throw trajectory, composition and the renderer's drawing are the real code. What is replaced: the clock (virtual), image decoding (`FakeLoader`, synthetic images), and platform pieces the React Native Jest preset mocks (`measureInWindow` is configured per test to report given rectangles; `AccessibilityInfo`; Reanimated's mock, whose `useSharedValue` `jest.setup.rn.js` makes stable across renders like the real hook).
 - **Real pixels.** Renderer tests draw into CanvasKit surfaces and read pixels back (colors at points, coverage, differences between frames). `jest.setup.canvaskit.js` copies arrays into CanvasKit's realm so gradients work under Jest.
 - **No disabled tests.** Failures are fixed at the root; nothing is skipped to get green.
+
+## Release tests (Phase 5)
+
+| File | Area |
+| --- | --- |
+| `src/react-native/lifecycle.test.tsx` | The ten release lifecycle scenarios, with real `GameFXProvider`, `GameFXOverlay` and `GameFXTarget` components and a virtual clock; each ends by checking `engine.stats` (no effects, playbacks, targets, scene nodes or frame loop left) and that nothing was logged with `console.error`: (1) provider mounted and unmounted 25 times with effects running; (2) 20 navigations between screens with targets while effects run; (3) cancel during execution restores motion and concealment; (4) 50 cancel-and-replay cycles of Throw & Explode; (5) targets removed while effects, a sequence and an endless animation run on them; (6) four effects on one target ending independently; (7) quality changed while running; (8) background and foreground through `AppState` (paused, then resumes where it was); (9) 200 engines created and disposed; (10) invalid parameters and a failing custom effect (error reported, others continue), plus `NotReadyError` during the first render |
+| `src/index.test.ts`, `src/react-native/publicApi.test.tsx` | The exported names of `react-native-graphics/core` and `react-native-graphics` equal `scripts/public-api.json`; internals are not exported |
+| `src/react-native/apiTypes.test.tsx` | Type-level contract checked by `tsc`: misspelled or wrongly typed parameters of built-in effects, attach specs and cues must stay compile errors (`@ts-expect-error`), valid calls (custom effect names, unions of names) must compile |
+| `src/engine/playback.test.ts` ("destroyed") | Tweens and keyframes of a destroyed node end with `targetDestroyed` and the frame loop stops; a timeline keeps running |
+
+These run in Jest with mocked platform pieces (`AppState`, `measureInWindow`, Reanimated). The same scenarios also run in a real app (the consumer's navigation and remount self-tests below), on the web automatically and on Android by hand.
+
+## Package validation
+
+`npm run pack:verify` (`scripts/verify-package.mjs`, also in CI) builds the SDK, runs `npm pack` and checks the archive:
+
+- nothing that should not ship: tests, `__tests__`, fixtures, images, screenshots, `.env` files, `tsbuildinfo`, repository folders (`example/`, `consumer/`, `docs/`, `scripts/`), key material;
+- `private: true` is still set;
+- every entry point in `main`, `module`, `types`, `react-native` and `exports` exists, and each ES module has its CommonJS twin, declaration and source map;
+- every import in the shipped JavaScript resolves inside the package or to a peer dependency;
+- the declarations export exactly the names in `scripts/public-api.json`;
+- installed into an empty npm project, `require('react-native-graphics/core')` and `import` work, deep imports are blocked, `SDK_VERSION` matches and a particle burst runs to completion.
+
+`--report <file>` writes the findings as JSON (CI uploads it); `--keep` keeps the temporary folder.
+
+## Consumer app
+
+`consumer/` holds an ordinary Expo SDK 58 app (`gamefx-consumer-test`) that uses the SDK like a third-party app. `npm run consumer:install` copies it **outside** the repository (default `../gamefx-consumer-test`; a folder inside the repository is refused), packs the SDK into its `vendor/` folder and installs that tarball, so nothing can resolve into the SDK's sources or `node_modules`.
+
+Screens: A an ordinary rewards page with effects on claim, B fire border (start, stop, cancel, intensity, color, move, rotate, scale, a button inside the burning view), C Throw & Explode (throw, replay, cancel, after-impact modes, stage status), D particles (touch bursts, five at once, presets on views), E composition (a multi-stage timeline with cues, skip and cancel; three effects stacked on one view), F navigation and lifecycle (live `engine.stats`, a busy screen to leave at any time, an automated open-and-leave ×10 self-test, a provider remount ×20 self-test, background log), G quality and reduced motion through provider props, H performance scenarios (see [PERFORMANCE.md](PERFORMANCE.md)).
+
+In the installed folder:
+
+| Command | What it checks |
+| --- | --- |
+| `npm run typecheck` | The app compiles against the installed package's declarations |
+| `npm run check:imports` | Only `react-native-graphics` and `react-native-graphics/core` are imported; no relative import leaves the app; no TypeScript paths, Metro or Babel aliases point outside; `node_modules/react-native-graphics` is a real folder installed from `file:vendor/*.tgz` |
+| `npm run export:android`, `export:ios`, `export:web` | Metro bundles for each platform |
+| `npm run test:web` | `scripts/web-smoke.mjs`: serves `dist-web`, drives every screen in headless Chromium, asserts that effects start, end and leave the engine counters at their idle values, that the navigation and remount self-tests print PASS, that one benchmark scenario reports clean, and that the page logs no errors; screenshots and `report.json` in `web-smoke-out/`. Needs Playwright with Chromium |
+| `npx expo start` | Run it in Expo Go (manual device check) |
+
+The web smoke test proves the packaged SDK works end to end in a separate app on React Native Web. It says nothing about Android or iOS rendering or speed.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and on `main`, with npm caching per lockfile:
+
+| Job | Steps |
+| --- | --- |
+| `check` | `npm ci`, typecheck, lint, all Jest projects (unit, integration, API contract, lifecycle), `pack:verify` (build, pack, content and API validation, install test); uploads the package report |
+| `example` | Installs the packed SDK into the showcase, type-checks it and bundles it for Android and iOS |
+| `consumer` | Creates the consumer app in the runner's temp folder from a fresh tarball, then typecheck, import isolation, Android, iOS and web bundles and the headless web smoke test; uploads the smoke screenshots |
 
 ## What the Phase 4 tests cover
 
@@ -79,7 +133,14 @@ What this proves: the public API drives the effects, and the rendering, position
 
 ## Device checks
 
-Android (the owner's Android 17 emulator, Expo Go), Windows PowerShell:
+Consumer app (Phase 5), Windows PowerShell, one line at a time, from the repository:
+1. `npm ci`
+2. `npm run consumer:install`
+3. `cd ..\gamefx-consumer-test`
+4. `npx expo start --clear`, then press `a`.
+5. Go through screens A to H. On F, run "Automated: open and leave ×10" and "Remount ×20" (both must print PASS). On H, run "Run 1–7" and the other two scenarios and copy the `[gamefx-bench]` lines from the terminal.
+
+Showcase, Android (the owner's Android 17 emulator, Expo Go), Windows PowerShell:
 1. `npm run example:install`
 2. `cd example`
 3. `npx expo start --clear`, then press `a`.

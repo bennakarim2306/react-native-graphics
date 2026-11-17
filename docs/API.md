@@ -1,6 +1,59 @@
-# Public API (Phase 4)
+# Public API (0.1.0-rc.0)
 
-Everything below is exported from `react-native-graphics`. The platform-independent subset (engine, scene graph, animations, clocks, graphics descriptions, assets, sprites, particles, effect definitions) is also exported from `react-native-graphics/core`, which does not import React Native, React or Skia. The API is **pre-1.0 and may change**.
+Everything below is exported from `react-native-graphics`. The platform-independent subset (engine, scene graph, animations, clocks, graphics descriptions, assets, sprites, particles, effect definitions) is also exported from `react-native-graphics/core`, which does not import React Native, React or Skia. The API is **pre-1.0**: it is a release candidate and can still change before 1.0 (see [RELEASE.md](RELEASE.md) for the versioning policy).
+
+## Entry points and stability
+
+| Import | Contents | Resolves to |
+| --- | --- | --- |
+| `react-native-graphics` | Everything: core plus `GameFXProvider`, `GameFXOverlay`, `GameFXTarget`, the hooks and the Skia renderer | `lib/module` (Metro, bundlers: conditions `react-native`, `browser`, `module`), `lib/commonjs` (Node, Jest: `default`) |
+| `react-native-graphics/core` | Engine, runtime, animation, scene, graphics, assets, sprites, particles, effects; no React, React Native or Skia imports | same, `core` files |
+
+- **Public** means exported from one of these two entry points. The exact list of exported names is pinned in `scripts/public-api.json`; tests and `npm run pack:verify` fail when it changes without the list being regenerated (`node scripts/public-api.mjs --write`), so every change to the public surface is a visible diff.
+- **Internal** is everything else: files under `lib/` and `src/`, members documented as `@internal`, and classes reachable only through a public object (for example the pool behind `sharedParticlePool`). `exports` blocks deep imports such as `react-native-graphics/lib/...`. Internal code can change in any release.
+- Types are in `lib/typescript` (with declaration maps to `src/`); TypeScript finds them through `types` and the `exports` `types` condition. `typesVersions` covers `moduleResolution: node` for `/core`.
+- `SDK_VERSION` holds the package version at runtime.
+
+## Errors
+
+Errors thrown synchronously are programming errors; asynchronous results never reject.
+
+| Error | When | Thrown by |
+| --- | --- | --- |
+| `InvalidOptionError` | Invalid parameters or options (each message names the effect and parameter), unknown effect names, unknown target ids, invalid animation options | `play`, `attach`, `cue`, `animate`, `timeline` items, `update`, engine options |
+| `DisposedError` | An engine, playback or node used after it was disposed | Engine and scene methods |
+| `NotReadyError` | A `useGameFX()` method that needs the engine was called during the provider's very first render | `fx.play`, `fx.attach`, `fx.animate`, ... (check `fx.ready`, or call from an event handler or effect) |
+| `AssetLoadError` | An image failed to load or decode | `assets.load()` / `loadImage()` reject with it; `useGameFXAssets` reports `status: 'error'` |
+
+Errors inside a running effect, an animation listener or a timeline callback do not throw into your code: they go to the provider's `onError` (default: rethrown on a microtask, which shows a red box in development). The failing effect is cancelled with reason `error`; everything else keeps running.
+
+## Lifecycle and cleanup guarantees
+
+- **Promises:** `EffectHandle.finished` and `Playback.finished` resolve exactly once and never reject; cancelled, replaced and disposed work resolves with `status: 'cancelled'` and a `reason`.
+- **Provider unmount:** disposes the engine; every effect and playback resolves with reason `disposed`, the scene is destroyed, images owned by the provider are released, and the frame loop stops.
+- **Target unmount** (`<GameFXTarget>` leaves the tree, for example on navigation): effects attached to it stop emitting and complete once their last particles faded (fire and sparks within about 2 s); sequences on it (`throwAndExplode`) are cancelled at once; tweens and keyframe animations of its `motion` end with reason `targetDestroyed` on the next frame. Timelines keep running until they end or you cancel them, so cancel a looping timeline in your component's cleanup.
+- **Idle:** when nothing runs, the engine publishes one empty frame and stops requesting frames. `engine.stats.frameLoop` tells whether it is subscribed.
+- **Background:** with `pauseInBackground` (default) the engine is paused while the app is in the background and resumed when it is active again.
+- Your own resources stay yours: JavaScript timers, listeners you add with `engine.on`, scene nodes you create outside a target, and handles you keep in refs.
+
+## Diagnostics: `engine.stats`
+
+`fx.engine?.stats` (or `useGameFXEngine()?.stats`) returns a snapshot, cheap enough to read a few times per second:
+
+```ts
+interface EngineStats {
+  state: 'running' | 'paused' | 'disposed';
+  activeEffects: number;   // running effects
+  playbacks: number;       // running animation playbacks
+  sceneNodes: number;      // nodes in the scene (including target proxies)
+  targets: number;         // mounted <GameFXTarget>s
+  localLayers: number;     // targets currently drawing effects in their own canvas
+  frameLoop: boolean;      // subscribed to the frame clock
+  assets: { registered: number; loaded: number; loading: number; bytes: number };
+}
+```
+
+The consumer app's diagnostics panel and its navigation self-test compare these counters before and after a screen to detect leaks.
 
 ## Coordinates
 
@@ -31,8 +84,9 @@ Creates one engine when it mounts and disposes it when it unmounts. Disposal can
 | `quality` | `'low' \| 'medium' \| 'high'` or a `QualityProfile` | `medium` (`high` before Phase 4.5). See [EFFECTS.md §8](EFFECTS.md#8-quality-reduced-motion-and-capabilities) |
 | `adaptiveQuality` | `boolean \| AdaptiveQualityOptions` | off. Steps quality down when frames are slow (> 22 ms average), up when fast (< 14 ms) |
 | `reducedMotion` | `boolean \| 'system'` | `'system'`: follows the OS setting (`AccessibilityInfo`), live |
+| `pauseInBackground` | `boolean` | `true`. Pauses the engine while the app is in the background (`AppState`) and resumes it when the app is active again, so effects continue where they were. An engine your app paused itself is left paused |
 
-Props are read once at mount, except `quality` and `reducedMotion`, which apply to effects started after a change.
+Props are read once at mount, except `quality`, `reducedMotion` and `pauseInBackground`. `quality` and `reducedMotion` apply to effects started after a change.
 
 ### `<GameFXOverlay>`
 
@@ -70,15 +124,17 @@ On iOS and Android a target can also take a picture of its view (React Native Sk
 | `cue(effect, params, options?)` | A timeline item that starts an effect at its exact time; `params` may be a function evaluated then. Options `hold`, `detached`, `playWhenSkipped` and `PlayOptions`. |
 | `throw(target, options?)` | Analytical ballistic motion (markers `launch`, `peak`, `impact`) of a target or node, for timelines. |
 | `throwAndExplode(target, options?)` | The reusable throw → impact → explosion + shake → settle sequence. Options in [EFFECTS.md §5](EFFECTS.md#5-composition-timelines-cues-and-throw--explode), including `trail`, `punch`, `explodeAt` and `quality` (Phase 4.5). Returns `{ playback, timeline, explosion, shake, trail }`. |
-| `quality`, `setQuality(level)` | Current quality level; change it for effects started afterwards. |
+| `quality`, `setQuality(level)` | Current quality level (`medium` by default, also before `ready`); change it for effects started afterwards. |
 | `reducedMotion` | Whether effects run in reduced-motion mode. |
 | `remeasure(id?)` | Asks targets (all, or one) to measure again, for example after scrolling. |
 | `fromWindow(point)` | Window point → canvas point. |
 | `assets` | The provider's `AssetManager` (or `null` until `ready`). |
 | `cancelAll()` | Cancels every running effect and animation playback of this provider. |
 | `activeCount` | Number of running effects. |
-| `ready` | `false` only during the provider's very first render. Calling `play` then throws. |
+| `ready` | `false` only during the provider's very first render. Calling `play` then throws `NotReadyError`. |
 | `engine` | The provider's `Engine` (scene, animations, timelines), or `null` until `ready`. |
+
+Built-in effect names always use the typed overloads: a misspelled or wrongly typed parameter is a compile error. Names of custom effects registered on the provider (`CustomEffectName<N>` excludes the built-in names) accept any parameters, validated at runtime. A union of built-in names accepts the parameters of each member.
 
 It throws if used outside a `GameFXProvider`. `useGameFXEngine()` returns the underlying `Engine` (or `null` during the first render), for example to listen to `effectStart` or `effectEnd`.
 
@@ -360,7 +416,7 @@ Rules: a timeline cannot be changed after it was played or nested; a playable ca
 | --- | --- |
 | `status` | `playing`, `paused`, `completed`, `cancelled`, `stopped` |
 | `time`, `duration` | Current and total time in ms (`Infinity` for endless loops) |
-| `finished` | Resolves once with `{ status, reason? }` (reasons: `user`, `cancelAll`, `reset`, `disposed`). Never rejects |
+| `finished` | Resolves once with `{ status, reason? }` (reasons: `user`, `cancelAll`, `reset`, `disposed`, `targetDestroyed`). Never rejects |
 | `pause()`, `resume()` | From a marker listener, `pause()` freezes exactly at the marker |
 | `cancel()` | Ends where it is; values keep their current state |
 | `stop()` | Ends and returns every animated value to its initial state |
@@ -402,8 +458,10 @@ clock.advance(1000, { frameMs: 16 });  // deterministic frames
 engine.dispose();
 ```
 
-`Engine` members: `scene`, `assets`, `targets`, `getTarget`, `resolveTarget`, `createSprite`, `createSpriteSheet`, `attach`, `play`, `cue`, `motion.throw`, `quality` (get/set), `reducedMotion` (get/set), `rendererCapabilities`/`setRendererCapabilities`, `camera`, `animate`, `keyframes`, `timeline`, `sequence`, `parallel`, `stagger`, `wait`, `run`, `register`, `hasEffect`, `pause`, `resume`, `cancelAll`, `reset`, `dispose`, `now()`, `on('frame' | 'effectStart' | 'effectEnd' | 'playbackStart' | 'playbackEnd')`, `state` (`running`, `paused`, `disposed`), `activeCount`, `playbackCount`, `drawables`. Clocks: `VirtualClock` (manual, for tests) and `FrameClock` (injected `requestFrame`/`cancelFrame`/`now`).
+`Engine` members: `stats`, `scene`, `assets`, `targets`, `getTarget`, `resolveTarget`, `createSprite`, `createSpriteSheet`, `attach`, `play`, `cue`, `motion.throw`, `quality` (get/set), `reducedMotion` (get/set), `rendererCapabilities`/`setRendererCapabilities`, `camera`, `animate`, `keyframes`, `timeline`, `sequence`, `parallel`, `stagger`, `wait`, `run`, `register`, `hasEffect`, `pause`, `resume`, `cancelAll`, `reset`, `dispose`, `now()`, `on('frame' | 'effectStart' | 'effectEnd' | 'playbackStart' | 'playbackEnd')`, `state` (`running`, `paused`, `disposed`), `activeCount`, `playbackCount`, `drawables`. Clocks: `VirtualClock` (manual, for tests) and `FrameClock` (injected `requestFrame`/`cancelFrame`/`now`).
 
 Sequences without React: `throwAndExplode(engine, target, options)` (same options as `fx.throwAndExplode`) and `new EffectCue(...)` via `engine.cue(...)`.
 
-Note: `lib/` is ESM without file extensions. It works with Metro, Jest/Babel and bundlers, but not with plain Node `import` yet (planned for packaging in Phase 5).
+In Node, both `require('react-native-graphics/core')` and `import ... from 'react-native-graphics/core'` load the CommonJS build (`lib/commonjs`); bundlers and Metro use the ES modules in `lib/module`. The root entry point imports React Native and Skia and is meant for React Native apps (and Jest with the React Native preset, see [INSTALLATION.md](INSTALLATION.md#jest)).
+
+**Destroyed objects:** a tween or keyframe animation whose object is destroyed ends on the next frame with `{ status: 'cancelled', reason: 'targetDestroyed' }`; nothing is written to the object after it was destroyed. Timelines continue (they may animate other objects and fire cues).
