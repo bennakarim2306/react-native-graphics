@@ -1,11 +1,11 @@
 import { particleBurst } from '../effects/particleBurst';
 import type { ParticleBurst } from '../particles/burst';
-import { VirtualClock } from './clock';
-import { defineEffect } from './effect';
-import type { Drawable, EffectInstance } from './effect';
+import { VirtualClock } from '../runtime/clock';
+import { defineEffect } from '../runtime/effect';
+import type { Drawable, EffectInstance } from '../runtime/effect';
 import { createEngine } from './engine';
 import type { EffectResult } from './engine';
-import { DisposedError, InvalidOptionError } from './errors';
+import { DisposedError, InvalidOptionError } from '../runtime/errors';
 
 function setup(options: { maxActiveEffects?: number } = {}) {
   const clock = new VirtualClock(1000);

@@ -1,0 +1,333 @@
+# Effects guide (Phase 4, visual quality revised in Phase 4.5)
+
+How to play, attach, combine and write effects; how particles and shaders work; and how effects follow ordinary React Native views. Every example uses the public `react-native-graphics` entry point and matches the implementation and its tests. The full type reference is in [API.md](API.md).
+
+Contents:
+1. [Playing and controlling effects](#1-playing-and-controlling-effects)
+2. [Built-in effects](#2-built-in-effects)
+3. [Particle system](#3-particle-system)
+4. [Shader system](#4-shader-system)
+5. [Composition: timelines, cues and Throw & Explode](#5-composition-timelines-cues-and-throw--explode)
+6. [Rules for multiple effects](#6-rules-for-multiple-effects)
+7. [React Native targets and the transform binding](#7-react-native-targets-and-the-transform-binding)
+8. [Quality, reduced motion and capabilities](#8-quality-reduced-motion-and-capabilities)
+9. [Custom effects](#9-custom-effects)
+10. [Limitations](#10-limitations)
+
+## 1. Playing and controlling effects
+
+```tsx
+const fx = useGameFX();
+
+// At a point (overlay coordinates)
+const boom = fx.play('explosion', { position: { x: 200, y: 400 }, particles: 150, screenShake: true });
+
+// On a target: a <GameFXTarget id> id, its handle (fx.getTarget(id)) or a scene node
+const fire = fx.attach('card', { effect: 'fire-border', intensity: 0.8, flameHeight: 25, color: '#FF6600', glow: true, sparks: true });
+// equivalent: fx.attach('card', 'fire-border', { intensity: 0.8 })
+// equivalent: fx.play('fire-border', { target: 'card', intensity: 0.8 })
+
+fire.setIntensity(1.2);                    // = fire.update({ intensity: 1.2 })
+fire.update({ color: '#2E7DFF', flameHeight: 30 });
+fire.stop();                               // graceful: no new flames, completes when burnt out
+boom.cancel();                             // immediate
+await boom.finished;                       // { status: 'completed' | 'cancelled', reason? }
+```
+
+Every `play` and `attach` returns an `EffectHandle`:
+
+| Member | Meaning |
+| --- | --- |
+| `status` | `playing`, `paused`, `completed`, `cancelled` |
+| `finished` | Promise of `{ status, reason? }`. Never rejects |
+| `onEnd(listener)` | Called once when the effect ends (immediately if it already has). Returns an unsubscribe function |
+| `pause()`, `resume()` | Freeze and continue the effect's own time |
+| `stop()` | Graceful end: emission and loops stop, what is on screen finishes. Effects without a graceful end are cancelled |
+| `cancel()` | Immediate end; resources are released at once. Safe to call twice |
+| `update(params)`, `setIntensity(n)` | Runtime parameter changes. Throws `InvalidOptionError` for invalid values or keys the effect cannot change. `updatable` says whether an effect accepts updates |
+| `zIndex` | Draw order among effects (settable) |
+| `key` | The replacement key, if one was given |
+
+Cancellation reasons: `user` (`cancel()`), `cancelAll`, `limit` (more than `maxActiveEffects`, the oldest goes), `replaced` (same `key`), `owner` (the timeline that started it was cancelled), `error` (the effect threw), `reset`, `disposed` (provider unmounted).
+
+`PlayOptions` (third argument of `play`, last argument of `attach`): `seed` (reproducible randomness), `zIndex`, `key`, `quality` (per-instance quality level).
+
+All effects run on the engine clock (one clock per provider). There are no separate timers: pausing the engine pauses every effect, and tests drive everything with a `VirtualClock`.
+
+## 2. Built-in effects
+
+Fifteen effects are registered by default. Numbers are points, ms or degrees. "Target" means the effect accepts `target` (and therefore `fx.attach`); "updates" lists what `update()` accepts.
+
+| Effect | What it is | Main parameters (defaults) | Updates |
+| --- | --- | --- | --- |
+| `fire-border` | Flames rising from a target's border (they rise on screen and turn with the target) | `intensity` 0.8 (0–2), `flameHeight` 24, `color` `#FF6A00`, `coreColor` and `tipColor` (derived from `color`), `speed` 1 (0.1–4), `glow` true, `glowStrength` 1 (0–2; not drawn on `low`), `sparks` true, `sparkDensity` 1 (0–3), `shape` `rounded-rect` (`rect`, `ellipse`, or a `PathData`), `cornerRadius` 12, `padding` 2, `mode` `auto`/`shader`/`particles`, `duration` (until stopped), `heatHaze` false. Target required | `intensity`, `flameHeight`, `color`, `coreColor`, `tipColor`, `speed`, `glow`, `glowStrength`, `sparks`, `sparkDensity` |
+| `explosion` | Layered composite: bloom, fireball, flash, shockwave, sparks, embers, smoke, optional debris and shake | `intensity` 1 (0.1–3), `particles` 150, `radius` 120, `colors`, `flash`/`shockwave`/`sparks`/`smoke` true, `debris` false (true or `{ image, frames }`), `glow` 1 (0–2: bloom and spark halos; halos on `high` only), `screenShake` false (true or shake params) | `intensity` |
+| `confetti` | Burst of tumbling strips | `count` 120, `direction` −90, `spread` 70, `power` 1, `duration` 2600, `colors`, `size` 5 | `intensity` |
+| `golden-sparks` | Additive streak sparks, burst and/or continuous (with a soft halo on `high`) | `count` 60, `rate` 0, `duration` (until stopped when `rate` > 0), `power` 1, `direction`, `spread`, `colors` | `intensity`, `rate` |
+| `smoke` | Rising, spreading, thinning soft puffs | `rate` 16, `burst` 0, `duration` (until stopped), `size` 14, `wind` 8, `rise` 1, `lifetime` 2200, `radius` 6, `colors`, `opacity` 0.32 (peak) | `intensity`, `rate` |
+| `trail` | World-space particles left behind a moving target | `rate` 70, `size` 5, `lifetime` 500, `colors`, `look` `soft`/`circle`/`spark`, `additive` true | `intensity`, `rate` |
+| `glow-pulse` | Pulsing glow ring around a target | `color` `#FFD54A`, `frequency` 1.2, `pulses` Infinity, `radius` 14, `expand` 10, `padding` 4, `shape` `rect`/`circle`, `intensity` 1, `size` 60 (without target) | `intensity` |
+| `shockwave` | Expanding ring(s): a thin bright edge over a faint wide band, decelerating and thinning | `radius` 140, `width` 10, `duration` 520, `echoes` 1 (with detail quality), `color`, `intensity` 1 | `intensity` |
+| `flash` | Short radial light | `radius` 90, `duration` 220, `color`, `intensity` 1 | `intensity` |
+| `screen-shake` | Shakes the overlay and/or host views | `scope` `overlay` (or target ids/nodes, or a list), `amplitude` 8, `rotation` 0, `duration` 400, `frequency` 28, `intensity` 1 | `intensity` |
+| `victory` | Composite: a soft bloom, confetti cannons at both edges and a centre burst, two waves of golden sparks, a shockwave ring and a glow pulse | `width` 280, `intensity` 1, `colors`, `glow` true | `intensity` |
+| `particles` | The generic emitter (section 3) as an effect | every `EmitterConfig` field, plus `intensity` (multiplies the rate) | `intensity` and every `EmitterUpdate` key (section 3) |
+| `particle-burst` | The Phase 1 one-shot burst | `count`, `duration`, `colors`, `speed`, `gravity`… | – |
+| `glow-border`, `energy-border` | Phase 3 outline effects | see [API.md](API.md) | – |
+
+Placement (every effect except the borders and `screen-shake`): `position` (overlay coordinates) **or** `target`; `offset` (a point in the target's local space, so it rotates with it); `follow` (default true: keep following the target; false: capture its position at start, for an explosion that stays where the impact happened).
+
+Each built-in effect validates its parameters when it starts and throws `InvalidOptionError` with the effect and parameter names.
+
+## 3. Particle system
+
+`ParticleEmitter` (`src/particles/emitter.ts`) is the simulation every particle effect uses. The `particles` effect exposes it directly:
+
+```ts
+fx.play('particles', {
+  target: 'chest', follow: true,
+  shape: { type: 'rect', width: 80, height: 60, edge: true },
+  directionMode: 'normal', spread: 20,
+  rate: 120, bursts: [{ count: 40 }], duration: 1500, maxParticles: 400,
+  lifetime: { min: 400, max: 900 }, speed: { min: 60, max: 140 },
+  gravity: { x: 0, y: 220 }, drag: 0.8,
+  size: { min: 2, max: 5 }, scale: [0.4, 1, 0],
+  opacity: { from: 1, to: 0, easing: 'easeInQuad' },
+  rotation: { min: 0, max: 360 }, angularVelocity: { min: -180, max: 180 },
+  colorOverLife: ['#FFF3C4', '#FFB300', '#FF3D0000'],
+  look: 'spark', blendMode: 'plus',
+  space: 'world', inheritVelocity: 0.3,
+});
+```
+
+| Property | Fields |
+| --- | --- |
+| Birth | `shape`: `point`, `line` (`from`, `to`), `circle` (`radius`, `edge`), `rect` (`width`, `height`, `edge`, `cornerRadius`), `path` (`PathData`, births along the outline). Shapes are in the emitter's local space |
+| Emission | `rate` (per second), `bursts` (`{ at, count }`), `duration`, `maxParticles` (default 500, at most 5000; extra births are dropped) |
+| Direction | `direction` (degrees, −90 = up), `spread`, `directionMode`: `fixed`, `normal` (outward from the shape, for borders) or `radial` |
+| Motion | `speed`, `gravity` (number = down, or a vector), `drag` (exponential), `inheritVelocity` (world space) |
+| Life | `lifetime` |
+| Appearance | `size`, `scale` (curve), `opacity` (curve), `rotation`, `angularVelocity`, `alignToVelocity`, `colors` (palette, one per particle) or `colorOverLife`, `look` (`circle`, `square` with `aspect`, `spark` with `stretch`, `ring`, `soft`, or `{ type: 'image', image, frames, frameMode }` for sprite-sheet particles), `blendMode`, `glow` (0–1, Phase 4.5: a wide faint pass under `spark` and `circle` particles plus a whiter core; about 5× the CPU raster cost of a plain spark in the render benchmark, so presets use it on `high` only) |
+
+`Spread` values are a number or `{ min, max }`. Curves (`ValueCurve`) are a constant, `{ from, to, easing }` or an array of evenly spaced keys.
+
+**World and local space** (the rule the brief asks to document):
+- `space: 'world'` (default): a particle's position is fixed in overlay coordinates at birth. It does not move with the emitter afterwards. Use it for anything left behind: trails, smoke, sparks flying off a moving card, explosion debris. `inheritVelocity` gives newborn particles part of the emitter's velocity.
+- `space: 'local'`: particles live in the emitter's coordinate system and move, rotate and scale with it every frame. Use it for things that belong to the object: the particle flames of `fire-border`, an aura.
+- In every effect that takes a target, the emitter's transform is the target's transform (position, rotation, scale) every frame while `follow` is true.
+
+**Changing a running emitter** (Phase 4A). `handle.update` on the `particles` effect (or `ParticleEmitter.configure` directly) changes emitter properties while it runs. What each change affects:
+
+| Change | Applies to |
+| --- | --- |
+| `shape`, `lifetime`, `speed`, `direction`, `spread`, `directionMode`, `size`, `rotation`, `angularVelocity`, `inheritVelocity` | Particles born from then on. Live particles keep what they were born with |
+| `gravity`, `drag` | Every live particle from then on. Each one continues from its current position and velocity, so there is no jump |
+| `colors`, `colorOverLife`, `opacity`, `scale` | Every live particle at once (a shorter palette wraps around) |
+| `rate` | Continuous emission from now on, still multiplied by `intensity` and the quality scale. No catch-up burst |
+| `space`, `maxParticles`, `bursts`, `duration`, `look`, `aspect`, `stretch`, `blendMode` | Cannot change while running (they size the emitter's storage or its draw batch). `update` throws `InvalidOptionError` |
+
+```ts
+const fountain = fx.play('particles', { target: 'stage', rate: 60, gravity: 400, speed: { min: 200, max: 270 } });
+fountain.update({ gravity: -300, colors: ['#C6FF00', '#76FF03'] } satisfies ParticlesUpdate);
+fountain.update({ rate: 120, spread: 45 });
+fountain.pause();   // frozen: no births, no motion
+fountain.resume();  // continues where it was, no catch-up
+fountain.stop();    // no new particles, completes when the live ones have died
+```
+
+Every update is validated as a whole before anything changes: an invalid key or value throws and leaves the emitter exactly as it was. Keys set to `undefined` are ignored. An emitter started without `rate` and without `duration` is a burst emitter: it ends after its bursts, and a later `rate` does not restart it. To switch continuous emission on later, start it with `rate: 0, duration: Infinity`. The presets built on emitters (`confetti`, `golden-sparks`, `smoke`, `trail`) map their own parameters to an emitter, so they keep the narrower `intensity` and `rate`.
+
+**Determinism:** every emitter takes its randomness from a seeded generator (`PlayOptions.seed`, or a seed drawn from the engine's seeded generator). The same seed and the same frame times give the same particles (tested). This includes runtime changes: the same seed with the same `update` calls at the same engine times gives the same particles, also at different frame rates (a change applies from the last frame before it, and births stay at exact times).
+
+**Pooling and bounds:** particle buffers (typed arrays) come from a shared pool sized by capacity, so repeated effects reuse memory (the 100-explosion stress test reuses more buffers than it allocates). Particles are stored in struct-of-arrays form; the simulation allocates nothing per particle per frame. Counts are bounded by `maxParticles`, by the quality profile's particle scale, and by `maxActiveEffects` (default 32).
+
+**Rendering:** the Skia adapter draws `circle`, `square`, `spark`, `ring` and `soft` particles one primitive per particle with a shared paint (`soft` adds a blur mask filter), and image particles with a single `drawAtlas` call per emitter. Batching the vector looks into fewer draw calls is a possible optimization once device measurements show it is needed.
+
+## 4. Shader system
+
+Shaders are SkSL runtime effects described by `ShaderDefinition` (source, typed uniforms, fallback color). They are used as fills of scene shapes, so they inherit the node's transform, opacity, clip and blend mode.
+
+**Reusable primitives** (`SHADER_CHUNKS`): `hash`, `noise` (value noise), `fbm` (fractal noise), `warp` (domain warp), `sdRoundRect`, `sdEllipse` (signed distances to shapes) and `ramp` (color gradient). `composeShader({ name, use, uniforms, main })` assembles them, in dependency order, into one definition:
+
+```ts
+import { composeShader } from 'react-native-graphics';
+
+const plasma = composeShader({
+  name: 'plasma',
+  use: ['fbm'],
+  uniforms: { time: 0, size: [100, 100], color: [0.4, 0.8, 1, 1] },
+  fallback: '#66CCFF',
+  main: `half4 main(float2 p) { float n = fbm(p * 0.03 + time * 0.4); return half4(color.rgb * n, n); }`,
+});
+engine.scene.createNode({ shape: { type: 'rect', width: 100, height: 100, fill: { type: 'shader', shader: plasma } } });
+```
+
+Built on the primitives: `flameBorderShader` (the fire border: rising tongues, buoyant licks and its own halo), `flameBorderLiteShader` (the same flames with two noise octaves and no halo, used on `low`) and `displacementShader` (heat haze, used by the `distort` node effect). Phase 3's `energyShader` and `fireShader` remain. `fbm2` is a two-octave `fbm` for cheaper shaders.
+
+**How the fire border is drawn (Phase 4.5).** One shader rectangle per border, anchored to the target, covers the target plus a margin for the flames. Per pixel it takes the signed distance to the target's outline and the screen "up" direction in the target's own coordinates (`up`, updated from the target's rotation), so flames are tall above the target, short below it and lean on the sides, and keep rising on screen while the target turns. Tongues are fractal noise stretched along the outline and scrolled outward; a second, faster noise adds licks; a slow noise varies the height along the border; and a small breathing term varies the whole fire. Colors run from `tipColor` (dark red, transparent) through `color` to `coreColor` (near white) at the base. The halo is part of the same shader (no offscreen blur layer), and the card itself is never covered by it. Sparks are a separate world-space emitter, so they stay behind when the target moves.
+
+| Concern | How it works |
+| --- | --- |
+| Time | The engine sets `time` (seconds of engine time) and `size` automatically when a shader declares them. Paused engine, paused time |
+| Parameters | Uniform values come from the fill (`uniforms: { … }`), are validated by name, type and value count, and can change every frame (fire-border updates intensity, color and flame height this way) |
+| Compilation | One central cache in the renderer, keyed by shader source: each program is compiled once per renderer, however many nodes use it (tested with `shaderStats`). `renderer.precompile([...])` compiles ahead of time |
+| Unsupported or broken | When runtime shaders are unavailable or compilation fails, the fill falls back to its `fallback` color and the renderer warns once (`onWarning`). Effects check `rendererCapabilities` first: `fire-border` in `auto` mode uses particle flames when shaders are unavailable |
+| Bounds and transforms | A shader fills its shape. Coordinates (`p`) are the shape's local coordinates; the shape moves, rotates and scales with its node and effect target. Draw area = the shape's bounds; nothing outside them is shaded |
+| Glow, blur, masking, distortion | Node effects (`glow`, `blur`, `drop-shadow`, `color-matrix`, `distort`) render the node through an offscreen layer with an image filter. Masks use blend modes (`dst-in`) inside `group` nodes (Phase 3) |
+| Gradients | Linear and radial gradient fills, and `ramp` inside shaders |
+
+## 5. Composition: timelines, cues and Throw & Explode
+
+Effects are combined with the Phase 2 timeline. `fx.cue(effect, params, options)` is a timeline item that starts an effect at an exact time of the timeline, through the playback's own event dispatch (not a JavaScript timer). `params` can be a function evaluated at that moment, for example to read where an object is at its impact.
+
+```ts
+const tl = fx.timeline();
+tl.add(fx.throw('card', { height: 220, distance: 120, duration: 900, rotation: 540 }));   // markers: launch, peak, impact
+tl.add(fx.cue('explosion', { target: 'card', follow: false, particles: 150 }), 900);     // at the impact
+tl.add(fx.cue('screen-shake', { scope: ['overlay', 'card'], amplitude: 7 }), 900);
+const playback = tl.play();
+playback.onMarker('impact', () => {/* app callback, same frame */});
+await playback.finished;
+```
+
+Cue options: `hold` (how long the cue occupies the timeline so later items wait for the effect), `detached` (keep the effect when the playback is cancelled), `playWhenSkipped` (still play it when `finish()` jumps over it), plus `PlayOptions`.
+
+`fx.throw(target, options)` is an analytical ballistic motion (not a physics engine): launch upwards, slow down to the `peak`, accelerate down to the landing point (`impact`). Options: `height` (200), `distance` (0), `drop` (0), `duration` (1000) **or** `gravity`, `rotation` (360), `scale` (1: the scale at the peak, a depth cue that returns to 1 at the landing; needs a scalable target), `restoreOnCancel` (true). It is a pure function of time, so it seeks, pauses and is frame-rate independent, and the landing point is exact (no randomness).
+
+**Throw & Explode** packages the whole sequence as a reusable function:
+
+```ts
+const seq = fx.throwAndExplode('card', {
+  throw: { height: 170, distance: 150, duration: 1000, rotation: 540 },
+  explosion: { intensity: 1, particles: 150, debris: true },   // false: none
+  shake: { amplitude: 9, duration: 380 },                       // false: none
+  afterImpact: 'return',                                        // 'stay' | 'return' | 'vanish'
+  settleDelay: 700, returnDuration: 450,
+  trail: true,              // optional trail during the flight (or trail parameters); default false
+  punch: 0.06,              // squash at the impact and spring back in 220 ms; 0 turns it off
+  explodeAt: 'contact',     // 'contact' (default): the lowest point of the object at the impact; 'center'
+  quality: 'high',          // profile of the explosion, shake and trail; default the engine's
+});
+seq.playback.onMarker('impact', () => {});
+seq.playback.cancel();   // or finish(), pause(), resume()
+```
+
+The flight defaults to `throw.scale` 1.08 (slightly larger at the peak). Order of events: launch (trail starts) → rotate while rising → `peak` → faster fall → `impact` (trail stops emitting) → at the same frame: the explosion at the contact point (bloom, fireball, flash, shockwave, sparks, embers, debris, smoke), the shake and the impact punch → settle delay → return to the start (or fade back in for `vanish`). Guarantees, each covered by tests:
+- Cancelling at any moment restores the view's transform (position, rotation, scale) and opacity **synchronously** (a replay started right after `cancel()` starts from the real resting state) and cancels the sequence's own explosion, shake and trail.
+- The impact effects use the requested `quality`; the flight and the impact moment are identical on every profile.
+- `finish()` jumps to the end state without playing the explosion.
+- If the target unmounts mid-flight, the sequence cancels itself and starts nothing for the missing view.
+- After a completed sequence, particles that are already flying finish on their own; nothing else is left running.
+
+## 6. Rules for multiple effects
+
+| Situation | Rule |
+| --- | --- |
+| Several effects on one target | Allowed without limit (within `maxActiveEffects`). They are independent; each follows the target |
+| Draw order | By `zIndex` (default 0), then by start order. A negative `zIndex` draws below scene nodes (a glow behind a card sprite) |
+| Replacing | Starting an effect with the `key` of a running effect cancels the running one (reason `replaced`). Use keys for "one fire per card" |
+| Conflicting transforms | Two animations of the same property of the same object: the newer one takes over that property (`overwrite: 'auto'`; the older playback gets an `interrupted` event). Shakes are offsets added on top of the motion and removed exactly when they end, so they never fight with a throw or a tween |
+| Ownership | Effects you start belong to you until they end. Effects a cue starts belong to the playback: cancelling or stopping the playback cancels them (reason `owner`) unless the cue is `detached` |
+| Target unmount | The proxy node is destroyed: attached effects end (shader parts disappear at once, world-space particles already emitted finish), running sequences on it cancel, and the view's transform binding is discarded. A remounted target starts untransformed |
+| Provider unmount | Everything is cancelled (reason `disposed`) and frame callbacks stop. No callback fires afterwards |
+| Shared resources | Compiled shaders, gradients, images and particle buffers are shared and cached; effects never own them |
+| Errors | An effect that throws is cancelled (reason `error`) and the error goes to `onError`; other effects keep running |
+
+## 7. React Native targets and the transform binding
+
+A React Native view cannot be drawn by Skia or turned into a texture, and the SDK does not try. Effects are drawn **around** views by the overlay, positioned from the view's measured layout:
+
+```tsx
+<GameFXTarget id="card" style={styles.card}>
+  <Text>ACE OF SPADES</Text>
+</GameFXTarget>
+```
+
+`<GameFXTarget>` renders a `View` (Reanimated `Animated.View`) with your style. It registers the id, measures its window rectangle on layout and on `fx.remeasure()` (call it from `onScroll`), and unregisters on unmount.
+
+**Explicit transform binding.** React Native transforms applied elsewhere (your own `Animated` or Reanimated styles) are not observable by the engine. Instead, the engine owns a `TargetMotion` for each target and applies it to the view itself:
+
+```ts
+const card = fx.getTarget('card');            // { id, node, motion }
+card.motion.x = 30;                           // the real view moves 30 points right
+await fx.animate('card', { x: 120, y: -80, rotation: 360, scale: 1.2, duration: 1000 }).finished;
+card.motion.reset();
+```
+
+- `motion` has `x`, `y`, `rotation`, `scale` (or `scaleX`/`scaleY`) and `opacity`. It is an animation target, so tweens, keyframes, timelines and `fx.throw` animate it.
+- Each change is applied to the view through Reanimated shared values (`translateX`, `translateY`, `rotate`, `scaleX`, `scaleY` before the view's own style transform; opacity multiplied with the style's opacity). React does not re-render.
+- At the same time the target's proxy node (what effects follow) is placed at the measured layout plus the motion, so fire, glows and trails stay aligned with the moving, rotating, scaling view.
+- Layout measurement is deferred while the view is transformed and runs again when the motion returns to identity, so a measured box is always the untransformed layout.
+- Shakes on a target (`screen-shake` with `scope: 'card'`) are temporary offsets on this binding: removed exactly when the shake ends, never written into your layout.
+
+What is followed: layout changes, scrolling (with `remeasure`), the transform binding, and `rotation`/`scale` props passed to `<GameFXTarget>`. What is not: transforms you apply to the view by other means.
+
+**Local effects layer (default).** Effects that stay fixed to a target are drawn inside the target's own view, not in the overlay: `fire-border` flames, `glow-border`, `energy-border`, `glow-pulse` and local-space `particles` that follow the target. `<GameFXTarget>` adds a Skia canvas as its last child (pointer events off, hidden from accessibility), extending beyond the view as far as these effects reach, and draws them there in the view's own coordinates. The phone then moves the view and its fire in the same frame: they cannot drift apart during fast throws and spins, while the list scrolls, or when an ancestor view is animated by your own code.
+
+```tsx
+<GameFXTarget id="card" style={styles.card}>…</GameFXTarget>                          // local layer (default)
+<GameFXTarget id="slot" effectsLayer="overlay" style={styles.slot}>…</GameFXTarget>  // everything in the overlay
+```
+
+| | `effectsLayer="local"` (default) | `effectsLayer="overlay"` |
+| --- | --- | --- |
+| Follows transforms, scrolling, animated parents | Same frame (moved by the platform) | From measurements, can trail by a frame or more |
+| Clipped by an ancestor with `overflow: 'hidden'` | Yes | No |
+| Draw order | Above the view's children, below its later siblings | Above the whole app |
+| View opacity | Also applies to the effect | Not applied (the effect uses the target's motion opacity) |
+| Cost | One extra canvas while the target has fixed effects (removed about 1.5 s after the last one ends) | None |
+
+World-space particles (fire sparks, `trail`, `smoke`, `golden-sparks`, explosions) always draw in the overlay: they stay where they were born, so they must not move with the view. For custom effects, set `anchor` on a drawable (see section 9) to opt it into the local layer.
+
+## 8. Quality, reduced motion and capabilities
+
+| Level | Particle scale | Runtime shaders | Shader detail | Glow (halos, bloom) | Details (embers, smoke, second rings) |
+| --- | --- | --- | --- | --- | --- |
+| `low` | 0.35 | on | `lite` (fire: 2 noise octaves, no halo) | off | off |
+| `medium` (default) | 0.65 | on | `full` | off | on |
+| `high` | 1 | on | `full` | on | on |
+
+The fire border's halo is part of its shader, so it is drawn on `medium` and `high` (not on `low`); "Glow" in the table means blur passes, spark halos and blooms. Every profile has the same timing: an explosion, a throw or a fire looks lighter on `low`, never shorter or later. The default is `medium` (it was `high` until Phase 4.5): the most expensive profile is opt-in. A custom `QualityProfile` with `shaders: false` turns the fire border into CPU particle flames.
+
+- Provider prop `quality`, or `fx.setQuality(level)` at runtime; per effect with `PlayOptions.quality`. A level applies to effects started afterwards.
+- `adaptiveQuality` (provider prop): the engine averages frame times over windows (default 30 frames) and steps down above 22 ms or up below 14 ms, within `min`/`max`.
+- `reducedMotion` (provider prop, default `'system'` = the OS setting via `AccessibilityInfo`, updated live; or `true`/`false`): screen shakes do nothing, flashes are dimmed to 40 %, and the generic particle effects emit half as many particles. Motions you start yourself (throws, tweens) are not changed: read `fx.reducedMotion` and choose.
+- The overlay reports the renderer's capabilities (`runtimeShaders`, node effects) to the engine; effects pick a supported path.
+
+Until Phase 4.5, `low` replaced the fire shader with about 50 CPU-simulated particles per border, which cost about 6× more JavaScript time than the shader. `low` now draws the lite shader instead; the particle flames remain for renderers without runtime shaders (`mode: 'particles'`, or `shaders: false`). GPU cost per profile has not been measured on a device (see [PERFORMANCE.md](PERFORMANCE.md)).
+
+## 9. Custom effects
+
+```ts
+import { defineComposite, defineEffect, flash, shockwave, particles } from 'react-native-graphics';
+
+// From primitives: a composite of existing effects, with one handle
+const pop = defineComposite<{ position: { x: number; y: number } }>({
+  name: 'pop',
+  layers: (p) => [
+    { name: 'flash', effect: flash, params: { position: p.position, radius: 50 } },
+    { name: 'ring', effect: shockwave, params: { position: p.position, radius: 70 }, delay: 40 },
+    { name: 'bits', effect: particles, params: { position: p.position, bursts: [{ count: 30 }], speed: { min: 80, max: 200 } } },
+  ],
+});
+
+<GameFXProvider effects={[pop]}>…</GameFXProvider>
+fx.play('pop', { position: { x: 100, y: 100 } });
+```
+
+`defineEffect({ name, create(params, context) })` writes an effect from scratch: `create` validates the parameters and returns an instance with `drawables`, `done`, `update(elapsedMs)` (elapsed time is absolute, so it is frame-rate independent), `dispose()`, and optionally `stop()` and `setParams()`. `context` gives the seeded `random`, the `quality` profile, `reducedMotion` and engine services (target resolution, camera and target offsets).
+
+A drawable that moves rigidly with its target (drawn in the target's frame every frame) can set `anchor: targetNode`. A `<GameFXTarget>` with a local layer then draws it inside the view (section 7); without one it is drawn by the overlay as usual. Leave `anchor` unset for anything that should stay behind when the target moves.
+
+## 10. Limitations
+
+- Effects are drawn around React Native views, never into them: no dissolve, distortion or recolouring of a view's own pixels (no view snapshots).
+- Transforms of a view that are not made through `motion` are not tracked by the engine (effects in the view's local layer still move with them, because they are part of the view).
+- Measurement (`measureInWindow`) is asynchronous: during scrolling, overlay-drawn effects (world-space particles, or targets with `effectsLayer="overlay"`) follow with a delay. Effects in a local layer do not.
+- A local layer is clipped by ancestors with `overflow: 'hidden'`; use `effectsLayer="overlay"` there.
+- The overlay is not clipped by scroll containers: overlay-drawn effects and scene nodes inside a target that scrolls under a fixed header are drawn over the header.
+- Running emitters cannot change `space`, `maxParticles`, `bursts`, `duration`, `look`, `aspect`, `stretch` or `blendMode`; start a new emitter (a replacement `key` swaps it in one call).
+- All simulation and picture recording run on the JavaScript thread; Skia draws the picture on the UI thread. A busy JS thread delays effect frames (not the app's UI).
+- `distort` and `heatHaze` require runtime shaders; without them they are skipped.
+- Lightning, ice, dissolve and the other optional presets from the brief were not built.
+- Nothing in this guide has been verified on iOS. The local effects layer has not been run on Android yet (see [PROGRESS.md](PROGRESS.md)).

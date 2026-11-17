@@ -2,4 +2,4 @@
 export * from './core';
 export * from './react-native';
 export { SkiaEffectsRenderer } from './renderer/skia/SkiaEffectsRenderer';
-export type { DrawStats, RendererCapabilities, SkiaFactory } from './renderer/skia/SkiaEffectsRenderer';
+export type { CameraTransform, DrawStats, RendererCapabilities, RendererWarning, SkiaFactory } from './renderer/skia/SkiaEffectsRenderer';

@@ -4,10 +4,7 @@ import { defineEffect } from '../runtime/effect';
 import type { EffectInstance } from '../runtime/effect';
 import { InvalidOptionError } from '../runtime/errors';
 
-export interface Point {
-  readonly x: number;
-  readonly y: number;
-}
+import type { Point } from '../scene/matrix';
 
 export interface Range {
   readonly min: number;

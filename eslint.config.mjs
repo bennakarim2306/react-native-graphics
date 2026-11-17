@@ -10,6 +10,11 @@ export default tseslint.config(
     languageOptions: { sourceType: 'commonjs', globals: globals.node },
   },
   {
+    // Playwright capture script: Node code plus functions evaluated in the page.
+    files: ['scripts/*.js'],
+    languageOptions: { sourceType: 'commonjs', globals: { ...globals.node, ...globals.browser } },
+  },
+  {
     files: ['src/**/*.ts', 'src/**/*.tsx'],
     extends: [...tseslint.configs.strictTypeChecked],
     languageOptions: {
@@ -17,16 +22,20 @@ export default tseslint.config(
     },
   },
   {
-    // Architecture boundary: the engine model (runtime, animation math, scene, particles,
-    // sprites, effect descriptions) must stay platform-independent. Only src/renderer/**
+    // Architecture boundary: the engine model (runtime, animation math, scene, engine, particles,
+    // sprites, motion, effect descriptions) must stay platform-independent. Only src/renderer/**
     // and src/react-native/** may touch React, React Native, Reanimated/Worklets or Skia.
     files: [
       'src/runtime/**/*.ts',
       'src/animation/**/*.ts',
       'src/scene/**/*.ts',
+      'src/engine/**/*.ts',
       'src/particles/**/*.ts',
       'src/sprites/**/*.ts',
+      'src/graphics/**/*.ts',
+      'src/assets/**/*.ts',
       'src/effects/**/*.ts',
+      'src/motion/**/*.ts',
     ],
     rules: {
       'no-restricted-imports': [
