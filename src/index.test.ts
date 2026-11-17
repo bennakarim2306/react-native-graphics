@@ -27,6 +27,7 @@ describe('package entry points', () => {
       'glow-pulse',
       'explosion',
       'victory',
+      'burn-away',
     ]);
   });
 

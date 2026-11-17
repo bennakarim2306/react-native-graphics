@@ -10,4 +10,4 @@ export type { Attachment, AttachmentHandle, AttachmentState, AttachOptions, Deta
 export { createHostViewBinding, syncNodeToLayout } from './host';
 export type { HostLayout, HostViewBinding } from './host';
 export { isTargetHandle, TargetMotion, TargetRegistry } from './targets';
-export type { TargetEvents, TargetHandle, TargetMotionProperty, TargetRef, TargetTransform, TargetViewTransform, WindowRect } from './targets';
+export type { TargetEvents, TargetHandle, TargetMotionProperty, TargetRef, TargetSnapshotter, TargetTransform, TargetViewTransform, WindowRect } from './targets';

@@ -1,5 +1,5 @@
 export { BLEND_MODES, validateBlendMode, validateFill, validateStroke } from './paint';
-export type { BlendMode, Color, Fill, LinearGradient, RadialGradient, ShaderFill, Stroke } from './paint';
+export type { BlendMode, Color, Fill, LinearGradient, RadialGradient, ShaderFill, ShaderImageChild, Stroke } from './paint';
 export { PathData } from './path';
 export type { Rect } from './path';
 export { defineShader, energyShader, fireShader, shaderUniformValues } from './shader';
@@ -8,5 +8,14 @@ export { brightness, grayscale, validateNodeEffect } from './effects';
 export type { NodeEffect } from './effects';
 export { formatColor, mixColor, parseColor, withAlpha } from './color';
 export type { RGBA } from './color';
-export { composeShader, displacementShader, flameBorderLiteShader, flameBorderShader, SHADER_CHUNKS } from './shaderLib';
+export {
+  burnCharShader,
+  burnGlowShader,
+  burnPaperShader,
+  composeShader,
+  displacementShader,
+  flameBorderLiteShader,
+  flameBorderShader,
+  SHADER_CHUNKS,
+} from './shaderLib';
 export type { ComposeShaderOptions, ShaderChunk } from './shaderLib';

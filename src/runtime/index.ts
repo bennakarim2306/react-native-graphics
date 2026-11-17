@@ -13,6 +13,8 @@ export type {
   EffectDefinition,
   EffectInstance,
   EffectServices,
+  TargetConcealment,
+  TargetSnapshot,
   TransformOffset,
 } from './effect';
 export { AdaptiveQuality, QUALITY_PROFILES, resolveQuality } from './quality';

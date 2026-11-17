@@ -1,5 +1,6 @@
 import type { AnimationTarget } from '../animation/target';
-import type { TransformOffset } from '../runtime/effect';
+import type { LoadedImage } from '../assets/assets';
+import type { TargetConcealment, TransformOffset } from '../runtime/effect';
 import { Emitter, rethrowAsync } from '../runtime/emitter';
 import type { ErrorReporter, Unsubscribe } from '../runtime/emitter';
 import { InvalidOptionError } from '../runtime/errors';
@@ -8,6 +9,8 @@ import type { HostLayout, HostViewBinding } from './host';
 import type { Point } from './matrix';
 import type { SceneNode } from './node';
 import type { Scene } from './scene';
+
+const clamp01 = (v: number): number => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0);
 
 /** A rectangle in window coordinates, as `measureInWindow` reports it. */
 export interface WindowRect {
@@ -167,6 +170,19 @@ export interface TargetEvents {
   remeasure: { readonly id: string | null };
   /** The transform a host must apply to its view changed (motion or offsets such as shakes). */
   transform: { readonly id: string; readonly transform: TargetViewTransform };
+  /**
+   * The host must multiply its view's opacity by `opacity` (1 = shown as usual, 0 = hidden),
+   * because an effect conceals the view (see `conceal`).
+   */
+  conceal: { readonly id: string; readonly opacity: number };
+}
+
+/** Takes a picture of a target's view (installed by its host, see `setSnapshotter`). */
+export type TargetSnapshotter = () => Promise<LoadedImage>;
+
+interface ConcealEntry {
+  opacity: number;
+  active: boolean;
 }
 
 interface OffsetEntry extends TransformOffset {
@@ -180,6 +196,8 @@ interface TargetEntry {
   window: WindowRect | null;
   transform: TargetTransform;
   measured: boolean;
+  readonly conceals: Set<ConcealEntry>;
+  snapshotter: TargetSnapshotter | null;
 }
 
 /**
@@ -194,6 +212,8 @@ interface TargetEntry {
 export class TargetRegistry {
   private readonly entries = new Map<string, TargetEntry>();
   private readonly localLayers = new Set<SceneNode>();
+  /** Proxy nodes of targets whose view is fully concealed (opacity factor 0). */
+  private readonly hidden = new Set<SceneNode>();
   private readonly emitter: Emitter<TargetEvents>;
   private overlayOrigin: Point = { x: 0, y: 0 };
   private disposed = false;
@@ -242,6 +262,8 @@ export class TargetRegistry {
       window: null,
       transform: {},
       measured: false,
+      conceals: new Set(),
+      snapshotter: null,
     });
     this.emitter.emit('added', { id, node });
     return node;
@@ -263,9 +285,13 @@ export class TargetRegistry {
     if (!entry) return;
     this.entries.delete(id);
     this.localLayers.delete(entry.binding.node);
+    this.hidden.delete(entry.binding.node);
     entry.motion.kill();
     for (const offset of entry.offsets) offset.removed = true;
     entry.offsets.clear();
+    for (const c of entry.conceals) c.active = false;
+    entry.conceals.clear();
+    entry.snapshotter = null;
     entry.binding.dispose();
     this.emitter.emit('removed', { id });
   }
@@ -371,9 +397,88 @@ export class TargetRegistry {
     else this.localLayers.delete(node);
   }
 
-  /** True when `node` is a target's proxy node and its host draws its anchored drawables itself. */
+  /**
+   * True when `node` is a target's proxy node and its host draws its anchored drawables itself.
+   * False while the view is fully concealed: its local layer is hidden with it, so the overlay
+   * draws them.
+   */
   drawsLocally(node: SceneNode): boolean {
-    return this.localLayers.has(node);
+    return this.localLayers.has(node) && !this.hidden.has(node);
+  }
+
+  /**
+   * Conceals a target's view: the host multiplies its opacity by the concealment's `opacity`
+   * (default 0, hidden) until `reveal` or `vanish`. The proxy node, layout and motion are
+   * unchanged, so effects stay attached. Null for unknown ids.
+   */
+  conceal(id: string, opacity = 0): TargetConcealment | null {
+    const entry = this.entries.get(id);
+    if (!entry) return null;
+    const state: ConcealEntry = { opacity: clamp01(opacity), active: true };
+    const update = () => {
+      if (this.entries.get(id) === entry) this.syncConceal(id, entry);
+    };
+    const end = () => {
+      if (!state.active) return false;
+      state.active = false;
+      entry.conceals.delete(state);
+      return true;
+    };
+    entry.conceals.add(state);
+    update();
+    return {
+      get opacity() {
+        return state.opacity;
+      },
+      set opacity(v: number) {
+        if (!state.active || !Number.isFinite(v)) return;
+        state.opacity = clamp01(v);
+        update();
+      },
+      get active() {
+        return state.active;
+      },
+      reveal: () => {
+        if (end()) update();
+      },
+      vanish: () => {
+        if (!state.active) return;
+        // Hidden by the motion first, so the view never shows for a frame in between.
+        if (this.entries.get(id) === entry) entry.motion.opacity = 0;
+        if (end()) update();
+      },
+    };
+  }
+
+  /** Opacity factor the host applies to the view of `id` (1 when nothing conceals it). */
+  concealOpacity(id: string): number {
+    const entry = this.entries.get(id);
+    return entry ? this.concealFactor(entry) : 1;
+  }
+
+  /**
+   * Installs (or removes, with null) the function that takes a picture of the target's view.
+   * The React Native host installs one where the platform supports it.
+   */
+  setSnapshotter(id: string, snapshotter: TargetSnapshotter | null): void {
+    const entry = this.entries.get(id);
+    if (entry) entry.snapshotter = snapshotter;
+  }
+
+  /** True when the target's host can take a picture of its view. */
+  canSnapshot(id: string): boolean {
+    return this.entries.get(id)?.snapshotter != null;
+  }
+
+  /** A picture of the target's view, or null when its host cannot take one. */
+  snapshot(id: string): Promise<LoadedImage> | null {
+    const snapshotter = this.entries.get(id)?.snapshotter;
+    if (!snapshotter) return null;
+    try {
+      return snapshotter();
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   /** Number of targets whose host currently draws a local layer. */
@@ -429,6 +534,19 @@ export class TargetRegistry {
     node.scaleX = (entry.transform.scaleX ?? 1) * view.scaleX;
     node.scaleY = (entry.transform.scaleY ?? 1) * view.scaleY;
     node.opacity = view.opacity;
+  }
+
+  private concealFactor(entry: TargetEntry): number {
+    let factor = 1;
+    for (const c of entry.conceals) factor *= c.opacity;
+    return factor;
+  }
+
+  private syncConceal(id: string, entry: TargetEntry): void {
+    const opacity = this.concealFactor(entry);
+    if (opacity === 0) this.hidden.add(entry.binding.node);
+    else this.hidden.delete(entry.binding.node);
+    this.emitter.emit('conceal', { id, opacity });
   }
 
   private syncMotion(id: string, entry: TargetEntry): void {

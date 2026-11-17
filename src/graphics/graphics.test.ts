@@ -114,3 +114,35 @@ describe('node effects', () => {
     expect(() => { validateNodeEffect({ type: 'sparkle' } as never); }).toThrow('Unknown node effect');
   });
 });
+
+describe('shader children (images a shader samples)', () => {
+  const source = 'uniform shader image;\nuniform float k;\nhalf4 main(float2 p) { return image.eval(p) * k; }';
+  const image = { kind: 'image', id: 'pic', width: 4, height: 4, native: {}, byteSize: 64, disposed: false, refCount: 0, retain: () => undefined, release: () => undefined } as const;
+
+  it('declares children that the source must declare', () => {
+    const shader = defineShader({ name: 'tint', source, uniforms: { k: 1 }, children: ['image'] });
+    expect(shader.children).toEqual(['image']);
+    expect(defineShader({ name: 'plain', source: 'half4 main(float2 p) { return half4(1); }' }).children).toEqual([]);
+    expect(() => {
+      defineShader({ name: 'x', source, children: ['other'] });
+    }).toThrow('does not declare');
+    expect(() => {
+      defineShader({ name: 'x', source, children: ['image', 'image'] });
+    }).toThrow('twice');
+    expect(() => {
+      defineShader({ name: 'x', source, children: ['im age'] });
+    }).toThrow(InvalidOptionError);
+  });
+
+  it('fills must give one image per child', () => {
+    const shader = defineShader({ name: 'tint', source, uniforms: { k: 1 }, children: ['image'] });
+    const check = (fill: Parameters<typeof validateFill>[0]) => () => {
+      validateFill(fill);
+    };
+    expect(check({ type: 'shader', shader, children: { image: { type: 'image', image } } })).not.toThrow();
+    expect(check({ type: 'shader', shader })).toThrow('needs an image for child "image"');
+    expect(check({ type: 'shader', shader, children: { image: { type: 'image', image }, extra: { type: 'image', image } } })).toThrow('no child "extra"');
+    expect(check({ type: 'shader', shader, children: { image: { type: 'image', image: {} as never } } })).toThrow('ImageAsset');
+    expect(check({ type: 'shader', shader, children: { image: { type: 'image', image, rect: { x: 0, y: 0, width: 0, height: 4 } } } })).toThrow('positive size');
+  });
+});

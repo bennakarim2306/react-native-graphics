@@ -1,3 +1,4 @@
+import type { ImageAsset } from '../assets/assets';
 import type { SceneNode } from '../scene/node';
 import type { TargetRef } from '../scene/targets';
 import type { QualityProfile } from './quality';
@@ -30,6 +31,34 @@ export interface TransformOffset {
   remove(): void;
 }
 
+/**
+ * Hides what an effect replaces while it draws it itself (for example a card that burns away).
+ * The target keeps its node, layout and motion, so effects stay attached. One concealment per
+ * caller: the view's opacity is multiplied by every active concealment's `opacity`.
+ */
+export interface TargetConcealment {
+  /** View opacity while concealed, 0 to 1. Default 0 (hidden). */
+  opacity: number;
+  /** False after `reveal` or `vanish`. */
+  readonly active: boolean;
+  /** Ends the concealment and shows the view as before. Idempotent. */
+  reveal(): void;
+  /**
+   * Ends the concealment but leaves the view hidden the normal way: a host target through its
+   * motion (`motion.opacity = 0`), a scene node with `visible = false`. The app shows it again
+   * by resetting those. Idempotent.
+   */
+  vanish(): void;
+}
+
+/** A picture of a host target's view, taken by its host. */
+export interface TargetSnapshot {
+  /** The picture, in physical pixels of the view's untransformed box. Held until `release`. */
+  readonly image: ImageAsset;
+  /** Frees the picture. Idempotent. */
+  release(): void;
+}
+
 /** What the active renderer can do, when known (the React Native overlay reports it). */
 export interface EffectCapabilities {
   readonly runtimeShaders: boolean;
@@ -52,6 +81,16 @@ export interface EffectServices {
   addTargetOffset(target: string | SceneNode): TransformOffset | null;
   /** Renderer capabilities, or null when no renderer reported them yet. */
   readonly capabilities: EffectCapabilities | null;
+  /**
+   * Conceals a host target's view (or hides a scene node) until revealed. Null when the node
+   * is destroyed. Optional so custom service objects (tests) can leave it out.
+   */
+  concealTarget?(target: SceneNode, opacity?: number): TargetConcealment | null;
+  /**
+   * Asks the host of a target to take a picture of its view. Null when the node is not a host
+   * target or its host cannot take pictures (React Native Web, tests without a host).
+   */
+  snapshotTarget?(target: SceneNode): Promise<TargetSnapshot> | null;
 }
 
 /** Services the engine gives to an effect when it is created. */

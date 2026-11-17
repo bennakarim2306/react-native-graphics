@@ -52,6 +52,8 @@ Wraps its children in an `Animated.View` (Reanimated) and anchors effects to it.
 
 Measured on mount, on layout changes, on `fx.remeasure()` (call it from `onScroll`) and when the overlay moves; measuring waits while the binding is not at identity, so the stored layout is always the untransformed one. On unmount the proxy node is destroyed, attached effects end, sequences on it cancel and the binding is discarded. The children are ordinary React Native views; Skia does not render them. With the local layer, an extra absolutely positioned child (pointer events off, hidden from accessibility, not part of flex layout) holds a Skia canvas while the target has fixed effects.
 
+On iOS and Android a target can also take a picture of its view (React Native Skia's `makeImageFromView`; the local layer is hidden for the two frames of the capture), and effects can conceal the view: its opacity is multiplied by the concealment until the effect reveals it again. `burn-away` uses both. On the web views cannot be captured, so effects that need a picture use their fallback.
+
 ### `useGameFXAssets(ids)`
 
 `const { status, assets, error } = useGameFXAssets(['coin', 'slime'])` loads registered ids (shared and cached) and re-renders once with `status: 'ready'` (assets by id) or `'error'`.
@@ -82,7 +84,7 @@ It throws if used outside a `GameFXProvider`. `useGameFXEngine()` returns the un
 
 ## Effects
 
-Fifteen effects are built in: `fire-border`, `explosion`, `confetti`, `golden-sparks`, `smoke`, `trail`, `glow-pulse`, `shockwave`, `flash`, `screen-shake`, `victory`, `particles` (the generic emitter), `particle-burst`, `glow-border` and `energy-border`. Their parameters, defaults and runtime updates are listed in [EFFECTS.md §2](EFFECTS.md#2-built-in-effects); the particle emitter in §3; shaders in §4. `PlayOptions` (`seed`, `zIndex`, `key`, `quality`) apply to all of them.
+Sixteen effects are built in: `fire-border`, `burn-away`, `explosion`, `confetti`, `golden-sparks`, `smoke`, `trail`, `glow-pulse`, `shockwave`, `flash`, `screen-shake`, `victory`, `particles` (the generic emitter), `particle-burst`, `glow-border` and `energy-border`. Their parameters, defaults and runtime updates are listed in [EFFECTS.md §2](EFFECTS.md#2-built-in-effects); the particle emitter in §3; shaders in §4. `PlayOptions` (`seed`, `zIndex`, `key`, `quality`) apply to all of them.
 
 ### `particle-burst`
 
@@ -180,6 +182,8 @@ fx.play('fountain', { x: 100, y: 400 }); // by name, params checked at runtime o
 
 An `EffectInstance` receives the **elapsed time since it started** (not a per-frame delta), must report `done`, expose renderer-independent `drawables`, and release resources in `dispose` (called exactly once). The Skia renderer draws `scene` and `particles` drawables. Other kinds are skipped and reported once. An effect can draw shapes, images and filters by publishing a `SceneDrawable` (`{ kind: 'scene', time, items, commands }`); the border effects do this. Any drawable may set `anchor` to the scene node it moves rigidly with; a `<GameFXTarget>` local layer then draws it inside the view (see `effectsLayer`).
 
+`context.services` (present when the effect runs in an engine) offers `resolveTarget`, `addCameraOffset`, `addTargetOffset`, `capabilities`, and two optional services: `concealTarget(node, opacity?)` hides a target's view (or a scene node) and returns a `TargetConcealment` (`opacity`, `active`, `reveal()`, `vanish()`: `vanish` leaves it hidden through its motion opacity); `snapshotTarget(node)` returns a promise of a `TargetSnapshot` (`image`, an `ImageAsset`, and `release()`), or null when the host cannot take pictures. Release every snapshot and reveal or vanish every concealment in `dispose`.
+
 ## Scene graph
 
 ```ts
@@ -251,11 +255,11 @@ half4 main(float2 p) { float d = length(p / size - 0.5); return half4(tint.rgb *
 | `path` | `path: PathData` + paint (local coordinates) |
 | `image` | `image: ImageAsset`, `source?` (rect in image pixels), `width?`, `height?` (default: source size), `anchor?` (default centre), `smoothing?` (`linear` or `nearest`) |
 
-Paint = `color?` (shorthand), `fill?: Fill`, `stroke?: { fill, width, cap?, join? }`; at least one is required. `Fill` is a color string, `{ type: 'linear-gradient', start, end, colors, positions? }`, `{ type: 'radial-gradient', center, radius, colors, positions? }` or `{ type: 'shader', shader, uniforms? }`.
+Paint = `color?` (shorthand), `fill?: Fill`, `stroke?: { fill, width, cap?, join? }`; at least one is required. `Fill` is a color string, `{ type: 'linear-gradient', start, end, colors, positions? }`, `{ type: 'radial-gradient', center, radius, colors, positions? }` or `{ type: 'shader', shader, uniforms?, children? }`. `children` gives each child shader the shader declares an image: `{ type: 'image', image, rect?, source? }` (`rect` places the image in the shape's coordinates, default the whole shape; images are not repeated outside it).
 
 **Node effects:** `{ type: 'glow', color, radius, strength? }`, `{ type: 'blur', radius }`, `{ type: 'drop-shadow', dx, dy, radius, color }`, `{ type: 'color-matrix', matrix }` (20 numbers), helpers `grayscale(amount)`, `brightness(factor)`.
 
-**Shaders:** `defineShader({ name, source, uniforms?, fallback? })`. SkSL source with `half4 main(float2 p)`; `p` starts at the shape's top-left corner. `time` (seconds) and `size` are automatic. Built-ins: `energyShader` (`colorA`, `colorB`, `speed`), `fireShader` (`intensity`). If runtime shaders are unavailable or compilation fails, the fallback color is drawn and a warning is reported once. Scenes with visible shader fills keep the engine drawing every frame.
+**Shaders:** `defineShader({ name, source, uniforms?, children?, fallback? })`; each name in `children` must be declared as `uniform shader name;` and is sampled with `name.eval(p)`. SkSL source with `half4 main(float2 p)`; `p` starts at the shape's top-left corner. `time` (seconds) and `size` are automatic. Built-ins: `energyShader` (`colorA`, `colorB`, `speed`), `fireShader` (`intensity`), and the shaders of `burn-away` (`burnPaperShader`, `burnGlowShader`, `burnCharShader`). If runtime shaders are unavailable or compilation fails, the fallback color is drawn and a warning is reported once. Scenes with visible shader fills keep the engine drawing every frame.
 
 **Masks:** put a child with `blendMode: 'dst-in'` inside a node with `group: true`; the child's alpha (a gradient or an image covering the group) masks the group.
 
@@ -381,7 +385,7 @@ const handle = card.attach({
 handle.detach();
 ```
 
-`update` runs every frame after animations, with the world transform of the attachment point and the target's `width`/`height`. The border effects are built on it. `engine.targets` (`TargetRegistry`: `register`, `updateWindowLayout`, `setOrigin`, `node`, `layout`, `unregister`, `requestRemeasure`, `setLocalLayer`, `drawsLocally`, `localLayerCount`, events `added`, `layout`, `removed`, `remeasure`, `transform`) is what `<GameFXTarget>` uses; `createHostViewBinding` and `syncNodeToLayout` remain available for custom host integrations.
+`update` runs every frame after animations, with the world transform of the attachment point and the target's `width`/`height`. The border effects are built on it. `engine.targets` (`TargetRegistry`: `register`, `updateWindowLayout`, `setOrigin`, `node`, `layout`, `unregister`, `requestRemeasure`, `setLocalLayer`, `drawsLocally`, `localLayerCount`, `conceal`, `concealOpacity`, `setSnapshotter`, `canSnapshot`, `snapshot`, events `added`, `layout`, `removed`, `remeasure`, `transform`, `conceal`) is what `<GameFXTarget>` uses; `createHostViewBinding` and `syncNodeToLayout` remain available for custom host integrations.
 
 ## Engine without React (`react-native-graphics/core`)
 
