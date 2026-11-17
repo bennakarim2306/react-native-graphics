@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "GameFX Consumer Test",
+    "slug": "gamefx-consumer-test",
+    "version": "1.0.0",
+    "orientation": "default",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.example.gamefxconsumer"
+    },
+    "android": {
+      "package": "dev.example.gamefxconsumer",
+      "predictiveBackGestureEnabled": false
+    }
+  }
+}

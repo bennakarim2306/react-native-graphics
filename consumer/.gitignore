@@ -1,0 +1,6 @@
+node_modules/
+vendor/
+.expo/
+dist-*/
+public/canvaskit.wasm
+web-smoke-out/
