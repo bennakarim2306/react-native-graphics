@@ -371,3 +371,159 @@ describe('curves and colors', () => {
     expect(() => parseColor('nope')).toThrow(InvalidOptionError);
   });
 });
+
+describe('ParticleEmitter: live configuration', () => {
+  const first = (e: ParticleEmitter, arr: Float32Array) => {
+    const i = Array.from(e.alive).indexOf(1);
+    return arr[i] ?? NaN;
+  };
+
+  it('birth properties apply to particles born afterwards only', () => {
+    const e = emitter({ rate: 10, lifetime: 5000, speed: 0, size: 2 });
+    e.update(500);
+    expect(e.born).toBe(6); // 0, 100, ..., 500
+    e.configure({ size: 8 });
+    e.update(1000);
+    const radii = living(e, e.radius);
+    expect(radii.filter((r) => r === 2)).toHaveLength(6);
+    expect(radii.filter((r) => r === 8)).toHaveLength(5); // 600 ... 1000
+  });
+
+  it('forces change the motion of live particles from now on, without a jump', () => {
+    const e = emitter({ bursts: [{ count: 1 }], speed: 100, direction: 0, spread: 0, lifetime: 10_000, angularVelocity: 90 });
+    e.update(1000);
+    expect([first(e, e.x), first(e, e.y)]).toEqual([100, 0]);
+    e.configure({ gravity: 200 });
+    e.update(1000);
+    // Same time, same state: position and velocity are continuous at the change.
+    expect([first(e, e.x), first(e, e.y), first(e, e.vx), first(e, e.vy)]).toEqual([100, 0, 100, 0]);
+    e.update(2000);
+    // One second of gravity from the change, not from birth (which would give y = 400).
+    expect(first(e, e.x)).toBeCloseTo(200, 4);
+    expect(first(e, e.y)).toBeCloseTo(100, 4);
+    expect(first(e, e.vy)).toBeCloseTo(200, 4);
+    e.configure({ drag: 1 });
+    e.update(3000);
+    // From (200, 100) with v = (100, 200): drag 1, gravity 200 → terminal vertical speed 200.
+    expect(first(e, e.x)).toBeCloseTo(200 + 100 * (1 - Math.exp(-1)), 3);
+    expect(first(e, e.y)).toBeCloseTo(300, 3);
+    expect(first(e, e.vy)).toBeCloseTo(200, 3);
+    // Spin still counts from birth: 90°/s for 3 s.
+    expect(first(e, e.rotation)).toBeCloseTo(270, 4);
+  });
+
+  it('new colors and curves apply to every live particle, even with a shorter palette', () => {
+    const e = emitter({ bursts: [{ count: 30 }], colors: ['#FF0000', '#00FF00', '#0000FF'], lifetime: 5000, speed: 0 });
+    e.update(0);
+    expect(new Set(living(e, e.red)).size).toBe(2); // 0 and 1
+    const blue = parseColor('#336699');
+    e.configure({ colors: ['#336699'] });
+    e.update(16);
+    expect(living(e, e.red).every((v) => v === Math.fround(blue.r))).toBe(true);
+    expect(living(e, e.blue).every((v) => v === Math.fround(blue.b))).toBe(true);
+    e.configure({ colors: ['#000000', '#336699'] });
+    e.update(32);
+    const reds = living(e, e.red);
+    expect(new Set(reds)).toEqual(new Set([0, Math.fround(blue.r)]));
+    e.configure({ opacity: 0.5, scale: 2 });
+    e.update(48);
+    expect(living(e, e.opacity).every((v) => v === 0.5)).toBe(true);
+    e.configure({ colorOverLife: ['#00FF00'] });
+    e.update(64);
+    expect(living(e, e.green).every((v) => v === 1)).toBe(true);
+    expect(living(e, e.red).every((v) => v === 0)).toBe(true);
+  });
+
+  it('a new rate re-times emission from now on (scaled by quality)', () => {
+    const e = emitter({ rate: 10, lifetime: 5000, speed: 0 });
+    e.update(1000);
+    expect(e.born).toBe(11);
+    e.configure({ rate: 20 });
+    e.update(2000);
+    expect(e.born).toBe(31); // 1050 ... 2000
+    const low = new ParticleEmitter({ rate: 10, lifetime: 5000, speed: 0 }, createRandom(1), { pool: new ParticlePool(), qualityScale: 0.5 });
+    low.update(1000);
+    expect(low.born).toBe(6);
+    low.configure({ rate: 20 }); // 10/s at half quality
+    low.update(2000);
+    expect(low.born).toBe(16);
+  });
+
+  it('an emitter started with rate 0 and an endless duration can be switched on later', () => {
+    const e = emitter({ rate: 0, duration: Infinity, lifetime: 5000, speed: 0 });
+    e.update(500);
+    expect(e.born).toBe(0);
+    expect(e.done).toBe(false);
+    e.configure({ rate: 10 });
+    e.update(1500);
+    expect(e.born).toBe(10); // 600 ... 1500
+    // Without a duration, a rate-0 emitter is a burst emitter and finishes.
+    const burst = emitter({ bursts: [{ count: 2 }], lifetime: 100 });
+    burst.update(200);
+    expect(burst.done).toBe(true);
+  });
+
+  it('rejects fixed or unknown keys and invalid values without changing anything', () => {
+    const config: EmitterConfig = { rate: 20, lifetime: 3000, speed: { min: 40, max: 90 }, spread: 90 };
+    const a = emitter(config, 9);
+    const b = emitter(config, 9);
+    a.update(500);
+    b.update(500);
+    for (const bad of [{ maxParticles: 10 }, { space: 'local' }, { look: 'spark' }, { bursts: [] }, { nope: 1 }]) {
+      expect(() => {
+        a.configure(bad as never);
+      }).toThrow(/cannot change/);
+    }
+    expect(() => {
+      a.configure({ speed: -5 });
+    }).toThrow(InvalidOptionError);
+    expect(() => {
+      a.configure({ gravity: Number.NaN, spread: 30 });
+    }).toThrow(InvalidOptionError);
+    expect(() => {
+      a.configure({ colors: [] });
+    }).toThrow(InvalidOptionError);
+    expect(() => {
+      a.configure(null as never);
+    }).toThrow('object');
+    // A key set to undefined is ignored.
+    a.configure({ gravity: undefined } as never);
+    a.update(2000);
+    b.update(2000);
+    expect(Array.from(a.x)).toEqual(Array.from(b.x));
+    expect(Array.from(a.y)).toEqual(Array.from(b.y));
+  });
+
+  it('is deterministic: same seed and same changes at the same times give the same particles at any frame rate', () => {
+    const run = (frameMs: number) => {
+      const e = emitter({ rate: 40, lifetime: 1500, speed: { min: 50, max: 120 }, colors: ['#FF0000', '#00FF00'] }, 5);
+      for (let t = 0; t <= 2000; t += frameMs) {
+        e.update(t);
+        // Changes take effect from the last update, so both runs change at 1000 ms.
+        if (t === 1000) e.configure({ gravity: { x: 30, y: 250 }, drag: 0.5, spread: 40, direction: -60, colors: ['#FFFFFF', '#000000', '#0000FF'] });
+      }
+      return { born: e.born, x: living(e, e.x), y: living(e, e.y), red: living(e, e.red) };
+    };
+    const fast = run(10);
+    expect(run(10)).toEqual(fast);
+    const slow = run(25);
+    expect(slow.born).toBe(fast.born);
+    const byValue = (a: number, b: number) => a - b;
+    expect(slow.x.sort(byValue)).toEqual(fast.x.sort(byValue));
+    expect(slow.y.sort(byValue)).toEqual(fast.y.sort(byValue));
+  });
+
+  it('ignores valid changes after dispose but still validates them', () => {
+    const pool = new ParticlePool();
+    const e = emitter({ rate: 10 }, 1, pool);
+    e.update(100);
+    e.dispose();
+    expect(() => {
+      e.configure({ speed: 10 });
+    }).not.toThrow();
+    expect(() => {
+      e.configure({ speed: -1 });
+    }).toThrow(InvalidOptionError);
+    expect(pool.stats.idle).toBe(1);
+  });
+});

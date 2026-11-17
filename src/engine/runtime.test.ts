@@ -84,9 +84,11 @@ describe('effect handles: graceful stop, live parameters, end listeners', () => 
     expect(() => {
       handle.setIntensity(-1);
     }).toThrow(InvalidOptionError);
+    // Emitter properties can change too (see the emitter tests); storage-sized ones cannot.
+    handle.update({ speed: 10 });
     expect(() => {
-      handle.update({ speed: 10 });
-    }).toThrow('only intensity and rate');
+      handle.update({ maxParticles: 10 });
+    }).toThrow('cannot change "maxParticles"');
     expect(() => {
       handle.update(null as unknown as Record<string, unknown>);
     }).toThrow('object');

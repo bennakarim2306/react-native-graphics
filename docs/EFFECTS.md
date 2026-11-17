@@ -71,7 +71,7 @@ Fifteen effects are registered by default. Numbers are points, ms or degrees. "T
 | `flash` | Short radial light | `radius` 90, `duration` 220, `color`, `intensity` 1 | `intensity` |
 | `screen-shake` | Shakes the overlay and/or host views | `scope` `overlay` (or target ids/nodes, or a list), `amplitude` 8, `rotation` 0, `duration` 400, `frequency` 28, `intensity` 1 | `intensity` |
 | `victory` | Composite: confetti cannons at both edges and a centre burst, two waves of golden sparks, a shockwave ring and a glow pulse | `width` 280, `intensity` 1, `colors`, `glow` true | `intensity` |
-| `particles` | The generic emitter (section 3) as an effect | every `EmitterConfig` field, plus `intensity` (multiplies the rate) | `intensity`, `rate` |
+| `particles` | The generic emitter (section 3) as an effect | every `EmitterConfig` field, plus `intensity` (multiplies the rate) | `intensity` and every `EmitterUpdate` key (section 3) |
 | `particle-burst` | The Phase 1 one-shot burst | `count`, `duration`, `colors`, `speed`, `gravity`… | – |
 | `glow-border`, `energy-border` | Phase 3 outline effects | see [API.md](API.md) | – |
 
@@ -116,7 +116,28 @@ fx.play('particles', {
 - `space: 'local'`: particles live in the emitter's coordinate system and move, rotate and scale with it every frame. Use it for things that belong to the object: the particle flames of `fire-border`, an aura.
 - In every effect that takes a target, the emitter's transform is the target's transform (position, rotation, scale) every frame while `follow` is true.
 
-**Determinism:** every emitter takes its randomness from a seeded generator (`PlayOptions.seed`, or a seed drawn from the engine's seeded generator). The same seed and the same frame times give the same particles (tested).
+**Changing a running emitter** (Phase 4A). `handle.update` on the `particles` effect (or `ParticleEmitter.configure` directly) changes emitter properties while it runs. What each change affects:
+
+| Change | Applies to |
+| --- | --- |
+| `shape`, `lifetime`, `speed`, `direction`, `spread`, `directionMode`, `size`, `rotation`, `angularVelocity`, `inheritVelocity` | Particles born from then on. Live particles keep what they were born with |
+| `gravity`, `drag` | Every live particle from then on. Each one continues from its current position and velocity, so there is no jump |
+| `colors`, `colorOverLife`, `opacity`, `scale` | Every live particle at once (a shorter palette wraps around) |
+| `rate` | Continuous emission from now on, still multiplied by `intensity` and the quality scale. No catch-up burst |
+| `space`, `maxParticles`, `bursts`, `duration`, `look`, `aspect`, `stretch`, `blendMode` | Cannot change while running (they size the emitter's storage or its draw batch). `update` throws `InvalidOptionError` |
+
+```ts
+const fountain = fx.play('particles', { target: 'stage', rate: 60, gravity: 400, speed: { min: 200, max: 270 } });
+fountain.update({ gravity: -300, colors: ['#C6FF00', '#76FF03'] } satisfies ParticlesUpdate);
+fountain.update({ rate: 120, spread: 45 });
+fountain.pause();   // frozen: no births, no motion
+fountain.resume();  // continues where it was, no catch-up
+fountain.stop();    // no new particles, completes when the live ones have died
+```
+
+Every update is validated as a whole before anything changes: an invalid key or value throws and leaves the emitter exactly as it was. Keys set to `undefined` are ignored. An emitter started without `rate` and without `duration` is a burst emitter: it ends after its bursts, and a later `rate` does not restart it. To switch continuous emission on later, start it with `rate: 0, duration: Infinity`. The presets built on emitters (`confetti`, `golden-sparks`, `smoke`, `trail`) map their own parameters to an emitter, so they keep the narrower `intensity` and `rate`.
+
+**Determinism:** every emitter takes its randomness from a seeded generator (`PlayOptions.seed`, or a seed drawn from the engine's seeded generator). The same seed and the same frame times give the same particles (tested). This includes runtime changes: the same seed with the same `update` calls at the same engine times gives the same particles, also at different frame rates (a change applies from the last frame before it, and births stay at exact times).
 
 **Pooling and bounds:** particle buffers (typed arrays) come from a shared pool sized by capacity, so repeated effects reuse memory (the 100-explosion stress test reuses more buffers than it allocates). Particles are stored in struct-of-arrays form; the simulation allocates nothing per particle per frame. Counts are bounded by `maxParticles`, by the quality profile's particle scale, and by `maxActiveEffects` (default 32).
 
@@ -295,6 +316,8 @@ A drawable that moves rigidly with its target (drawn in the target's frame every
 - Transforms of a view that are not made through `motion` are not tracked by the engine (effects in the view's local layer still move with them, because they are part of the view).
 - Measurement (`measureInWindow`) is asynchronous: during scrolling, overlay-drawn effects (world-space particles, or targets with `effectsLayer="overlay"`) follow with a delay. Effects in a local layer do not.
 - A local layer is clipped by ancestors with `overflow: 'hidden'`; use `effectsLayer="overlay"` there.
+- The overlay is not clipped by scroll containers: overlay-drawn effects and scene nodes inside a target that scrolls under a fixed header are drawn over the header.
+- Running emitters cannot change `space`, `maxParticles`, `bursts`, `duration`, `look`, `aspect`, `stretch` or `blendMode`; start a new emitter (a replacement `key` swaps it in one call).
 - All simulation and picture recording run on the JavaScript thread; Skia draws the picture on the UI thread. A busy JS thread delays effect frames (not the app's UI).
 - `distort` and `heatHaze` require runtime shaders; without them they are skipped.
 - Lightning, ice, dissolve and the other optional presets from the brief were not built.

@@ -1,11 +1,14 @@
 /**
- * Phase 4 "GameFX Effects Showcase": demos A–E for the composable effects system.
+ * Phase 4 "GameFX Effects Showcase": demos A–G for the composable effects system.
  *
  * A. Fire border on an ordinary view: on/off, intensity, flame height, color, move, rotate, scale.
  * B. Throw & Explode: the real view is thrown, explodes at the impact, shakes, then settles.
  * C. Particle playground: count, speed, gravity, color, lifetime, direction, size.
  * D. Effects gallery: every preset on one button each.
  * E. Combined effects on several targets: many effects per target, keys, staggered timelines.
+ * F. Performance scenarios (PerfDemo.tsx).
+ * G. Emitter lab (EmitterLab.tsx, Phase 4A): four emitters at once, live changes, per-handle
+ *    pause/resume/stop/cancel, emitters on moving scene nodes, cleanup when the target goes.
  *
  * Only the public `react-native-graphics` entry point is used. Views move through their
  * transform binding (`fx.getTarget(id).motion`), so effects stay attached while they fly,
@@ -18,6 +21,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { GameFXTarget, useGameFX, useGameFXEngine } from 'react-native-graphics';
+import { EmitterLab } from './EmitterLab';
 import { PerfDemo } from './PerfDemo';
 import { Button } from './ui';
 import type { EffectHandle, GameFX, Playback, QualityLevel, ThrowAndExplodeSequence } from 'react-native-graphics';
@@ -470,6 +474,7 @@ export function EffectsDemo() {
         <GalleryDemo />
         <CombinedDemo />
         <PerfDemo />
+        <EmitterLab />
       </ScrollList>
     </View>
   );

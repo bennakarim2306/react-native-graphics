@@ -1,4 +1,4 @@
-// Captures the Phase 4 Effects tab of the exported web build (react-native-web + CanvasKit).
+// Captures the Phase 4 Effects tab (demos A–E and G) of the exported web build (react-native-web + CanvasKit).
 // Headless Chromium renders WebGL in software, so a screenshot takes over a second. To capture
 // exact moments, page time (performance.now, which the engine's frame clock reads) runs at
 // 0.25x and is frozen while each screenshot is taken. The app itself is unchanged.
@@ -148,6 +148,38 @@ const scale = Number(process.argv[3] || 2);
   await wait(3000);
   await click('Clear all'); await wait(1200); await shot('e4-cleared');
   logs.push('final counter: ' + (await page.getByText(/^Active: /).first().textContent()));
+
+  // G. Emitter lab (Phase 4A): four emitters, live changes, pause, cancel, target removal.
+  const labReport = async (label) => { logs.push(label + ': ' + (await page.getByText(/Particle pool/).first().textContent())); };
+  const labStep = async (label, sign, times) => {
+    for (let i = 0; i < times; i++) await page.getByText(label, { exact: true }).last().locator('xpath=..').getByText(sign, { exact: true }).click();
+  };
+  // Labels such as "Fountain" and "Cancel" also exist in earlier demos: the lab's come last.
+  const clickLast = async (text) => { await page.getByText(text, { exact: true }).last().click(); };
+  await scrollTo('G · Emitter lab');
+  await click('Start lab'); await wait(1500); await shot('g1-lab-four-emitters');
+  await labReport('lab started');
+  await clickLast('Fountain');
+  await labStep('Rate /s', '+', 6); await labStep('Spread °', '+', 2);
+  await clickLast('Lime');
+  // Clicking controls lower down scrolls the page: bring the stage back before each shot.
+  await scrollTo('G · Emitter lab'); await wait(700); await shot('g2-fountain-live-rate-spread-lime');
+  await clickLast('Trail');
+  await clickLast('Violet');
+  await labStep('Size', '+', 3);
+  await clickLast('Snow');
+  await labStep('Gravity', '+', 2);
+  await scrollTo('G · Emitter lab'); await wait(700); await shot('g3-trail-violet-snow-gravity');
+  await click('Pause all'); await scrollTo('G · Emitter lab'); await wait(600); await shot('g4-all-paused');
+  await click('Resume all'); await wait(300);
+  await clickLast('Fountain'); await clickLast('Cancel'); await scrollTo('G · Emitter lab'); await wait(400); await shot('g5-fountain-cancelled');
+  await labReport('fountain cancelled');
+  await click('Remove orb'); await wait(150); await shot('g6-orb-removed');
+  await wait(1200); await shot('g7-orb-emitters-ended');
+  await labReport('orb removed, emitters ended');
+  await click('Add orb'); await wait(900); await shot('g8-orb-added');
+  await labReport('orb added');
+  await click('End lab'); await wait(600); await shot('g9-lab-ended');
   console.log(JSON.stringify(logs, null, 1));
   await browser.close();
 })();

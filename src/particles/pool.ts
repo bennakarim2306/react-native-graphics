@@ -7,6 +7,8 @@ export class ParticleBuffers {
   // Birth state.
   readonly birth: Float64Array;
   readonly life: Float32Array;
+  /** Time the motion state below (x0, y0, vx0, vy0) refers to: the birth, or the last force change. */
+  readonly t0: Float64Array;
   readonly x0: Float32Array;
   readonly y0: Float32Array;
   readonly vx0: Float32Array;
@@ -34,6 +36,7 @@ export class ParticleBuffers {
   constructor(readonly capacity: number) {
     this.birth = new Float64Array(capacity);
     this.life = new Float32Array(capacity);
+    this.t0 = new Float64Array(capacity);
     this.x0 = new Float32Array(capacity);
     this.y0 = new Float32Array(capacity);
     this.vx0 = new Float32Array(capacity);

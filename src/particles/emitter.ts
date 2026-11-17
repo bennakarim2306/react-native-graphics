@@ -103,6 +103,63 @@ export interface EmitterConfig {
   readonly inheritVelocity?: number;
 }
 
+/**
+ * What `ParticleEmitter.configure` (and `handle.update` on the `particles` effect) can change
+ * while the emitter runs:
+ * - Birth properties (`shape`, `lifetime`, `speed`, `direction`, `spread`, `directionMode`,
+ *   `size`, `rotation`, `angularVelocity`, `inheritVelocity`) apply to particles born from then on.
+ * - Forces (`gravity`, `drag`) act on live particles from then on, without a jump in their
+ *   position or velocity.
+ * - Looks over life (`colors`, `colorOverLife`, `opacity`, `scale`) apply to every live particle
+ *   at once.
+ * - `rate` re-times continuous emission from now on.
+ *
+ * Fixed for the emitter's life (they size its storage or its batches): `space`, `maxParticles`,
+ * `bursts`, `duration`, `look`, `aspect`, `stretch` and `blendMode`.
+ */
+export type EmitterUpdate = Pick<
+  EmitterConfig,
+  | 'rate'
+  | 'shape'
+  | 'lifetime'
+  | 'speed'
+  | 'direction'
+  | 'spread'
+  | 'directionMode'
+  | 'size'
+  | 'rotation'
+  | 'angularVelocity'
+  | 'inheritVelocity'
+  | 'gravity'
+  | 'drag'
+  | 'colors'
+  | 'colorOverLife'
+  | 'opacity'
+  | 'scale'
+>;
+
+/** The keys of `EmitterUpdate`. */
+export const EMITTER_UPDATE_KEYS: readonly (keyof EmitterUpdate)[] = [
+  'rate',
+  'shape',
+  'lifetime',
+  'speed',
+  'direction',
+  'spread',
+  'directionMode',
+  'size',
+  'rotation',
+  'angularVelocity',
+  'inheritVelocity',
+  'gravity',
+  'drag',
+  'colors',
+  'colorOverLife',
+  'opacity',
+  'scale',
+];
+const UPDATE_KEYS: ReadonlySet<string> = new Set(EMITTER_UPDATE_KEYS);
+
 export const MAX_EMITTER_PARTICLES = 5000;
 export const DEFAULT_EMITTER_COLORS: readonly string[] = ['#FFD54A', '#FFB300', '#FF7043', '#FFF3C4'];
 
@@ -271,10 +328,11 @@ const DEG = Math.PI / 180;
 /**
  * A particle emitter: continuous emission and bursts from a shape, with closed-form motion
  * (velocity, constant acceleration, linear drag), so a particle's state depends only on its
- * age. Births happen at exact scheduled times (`n / rate`), and each newborn particle uses the
- * seeded random generator in birth order. A static emitter therefore produces identical
- * results at any frame rate; a moving world-space emitter interpolates its position between
- * frames for births in between.
+ * age and the forces since the last change. Births happen at exact scheduled times
+ * (`n / rate`), and each newborn particle uses the seeded random generator in birth order. A
+ * static emitter therefore produces identical results at any frame rate; a moving world-space
+ * emitter interpolates its position between frames for births in between. The same seed and
+ * the same sequence of `configure` calls at the same times give the same particles.
  *
  * Storage comes from a `ParticlePool` and is returned on `dispose`.
  */
@@ -290,7 +348,9 @@ export class ParticleEmitter implements ParticleDrawable {
   matrix: Matrix2D | undefined;
   /** Node the particles move rigidly with (set by effects for local-space emitters); see `Drawable.anchor`. */
   anchor: SceneNode | undefined;
-  private readonly cfg: Resolved;
+  private cfg: Resolved;
+  private source: EmitterConfig;
+  private readonly qualityScale: number;
   private buffers: ParticleBuffers;
   private freeTop: number;
   private aliveTotal = 0;
@@ -316,7 +376,9 @@ export class ParticleEmitter implements ParticleDrawable {
     private readonly random: Random,
     options: { qualityScale?: number; pool?: ParticlePool; transform?: Matrix2D } = {},
   ) {
-    this.cfg = resolveEmitterConfig(config, options.qualityScale ?? 1);
+    this.qualityScale = options.qualityScale ?? 1;
+    this.cfg = resolveEmitterConfig(config, this.qualityScale);
+    this.source = config;
     this.look = this.cfg.look;
     this.blendMode = this.cfg.blendMode;
     this.aspect = this.cfg.aspect;
@@ -426,6 +488,32 @@ export class ParticleEmitter implements ParticleDrawable {
     this.rateIndex = rate > 0 ? Math.floor((this.elapsed * rate) / 1000) + 1 : 0;
   }
 
+  /**
+   * Changes properties of the running emitter (see `EmitterUpdate` for what each one affects).
+   * Keys set to `undefined` are ignored. Validates everything first and throws
+   * `InvalidOptionError` without changing anything when a key or value is invalid.
+   */
+  configure(patch: EmitterUpdate): void {
+    const raw: unknown = patch;
+    if (typeof raw !== 'object' || raw === null) throw new InvalidOptionError('configure expects an object of emitter properties.');
+    const changes: Record<string, unknown> = {};
+    // Typed as unknown: JavaScript callers can pass anything, including undefined values.
+    const entries: [string, unknown][] = Object.entries(patch);
+    for (const [key, value] of entries) {
+      if (!UPDATE_KEYS.has(key)) {
+        throw new InvalidOptionError(`An emitter cannot change "${key}" while running (allowed: ${EMITTER_UPDATE_KEYS.join(', ')}).`);
+      }
+      if (value !== undefined) changes[key] = value;
+    }
+    const source: EmitterConfig = { ...this.source, ...changes };
+    const next = resolveEmitterConfig(source, this.qualityScale);
+    if (this.disposed) return;
+    if (next.gx !== this.cfg.gx || next.gy !== this.cfg.gy || next.drag !== this.cfg.drag) this.rebase();
+    this.source = source;
+    this.cfg = next;
+    if ('rate' in changes) this.setRate(next.rate);
+  }
+
   /** Advances to `elapsedMs` since the emitter started: births, then every particle's state. */
   update(elapsedMs: number): void {
     if (this.disposed) return;
@@ -448,6 +536,23 @@ export class ParticleEmitter implements ParticleDrawable {
     this.disposed = true;
     this.aliveTotal = 0;
     this.pool.release(this.buffers);
+  }
+
+  /**
+   * Restarts every live particle's motion from its current state, so new forces apply from now
+   * on without a jump.
+   */
+  private rebase(): void {
+    const b = this.buffers;
+    const n = this.cfg.maxParticles;
+    for (let i = 0; i < n; i++) {
+      if (b.alive[i] !== 1) continue;
+      b.x0[i] = b.x[i] ?? 0;
+      b.y0[i] = b.y[i] ?? 0;
+      b.vx0[i] = b.vx[i] ?? 0;
+      b.vy0[i] = b.vy[i] ?? 0;
+      b.t0[i] = this.elapsed;
+    }
   }
 
   /** Births up to `to`, in time order (a burst before a rate birth at the same time). */
@@ -532,6 +637,7 @@ export class ParticleEmitter implements ParticleDrawable {
       }
     }
     b.birth[i] = time;
+    b.t0[i] = time;
     b.life[i] = life;
     b.x0[i] = lx;
     b.y0[i] = ly;
@@ -554,6 +660,7 @@ export class ParticleEmitter implements ParticleDrawable {
     const ax = c.gx;
     const ay = c.gy;
     const frames = c.frames?.length ?? 1;
+    const colorCount = c.paletteAlpha.length;
     let alive = 0;
     for (let i = 0; i < n; i++) {
       if (b.alive[i] !== 1) continue;
@@ -565,7 +672,8 @@ export class ParticleEmitter implements ParticleDrawable {
         b.free[this.freeTop++] = i;
         continue;
       }
-      const t = ageMs / 1000;
+      // Motion restarts at t0 (birth or the last force change); spin counts from birth.
+      const t = (now - (b.t0[i] ?? 0)) / 1000;
       const p = ageMs / life;
       const vx0 = b.vx0[i] ?? 0;
       const vy0 = b.vy0[i] ?? 0;
@@ -592,7 +700,7 @@ export class ParticleEmitter implements ParticleDrawable {
       b.vy[i] = vy;
       b.radius[i] = (b.size[i] ?? 0) * c.scale(p);
       b.rotation[i] =
-        c.align || c.look === 'spark' ? Math.atan2(vy, vx) / DEG : (b.rotation0[i] ?? 0) + (b.spin[i] ?? 0) * t;
+        c.align || c.look === 'spark' ? Math.atan2(vy, vx) / DEG : (b.rotation0[i] ?? 0) + ((b.spin[i] ?? 0) * ageMs) / 1000;
       let alpha: number;
       if (c.overLife) {
         const stops = c.overLife.length / 4;
@@ -613,7 +721,8 @@ export class ParticleEmitter implements ParticleDrawable {
           alpha = mix(c.overLife[o + 3], c.overLife[o + 7]);
         }
       } else {
-        const ci = b.paletteIndex[i] ?? 0;
+        // Modulo: the palette may have been replaced by a shorter one since the particle was born.
+        const ci = (b.paletteIndex[i] ?? 0) % colorCount;
         b.red[i] = c.palette[ci * 3] ?? 1;
         b.green[i] = c.palette[ci * 3 + 1] ?? 1;
         b.blue[i] = c.palette[ci * 3 + 2] ?? 1;

@@ -25,7 +25,7 @@ export type { BorderParams, GlowBorderParams, ShaderBorderParams } from './borde
 export { FireBorderInstance, fireBorder } from './fireBorder';
 export type { FireBorderParams, FireBorderShape } from './fireBorder';
 export { flash, particles, ParticlesInstance, screenShake, shockwave } from './primitives';
-export type { FlashParams, ParticlesParams, ScreenShakeParams, ShockwaveParams } from './primitives';
+export type { FlashParams, ParticlesParams, ParticlesUpdate, ScreenShakeParams, ShockwaveParams } from './primitives';
 export {
   CONFETTI_COLORS,
   confetti,

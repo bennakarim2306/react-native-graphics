@@ -2,8 +2,8 @@ import { resolveEasing } from '../animation/easing';
 import { validateFill } from '../graphics/paint';
 import type { Color, RadialGradient } from '../graphics/paint';
 import { withAlpha } from '../graphics/color';
-import { ParticleEmitter } from '../particles/emitter';
-import type { EmitterConfig } from '../particles/emitter';
+import { EMITTER_UPDATE_KEYS, ParticleEmitter } from '../particles/emitter';
+import type { EmitterConfig, EmitterUpdate } from '../particles/emitter';
 import { contextQuality, defineEffect } from '../runtime/effect';
 import type { Drawable, EffectContext, EffectDefinition, EffectInstance, TransformOffset } from '../runtime/effect';
 import { InvalidOptionError } from '../runtime/errors';
@@ -14,13 +14,22 @@ import type { PlacementParams } from './placement';
 
 // --- particles ------------------------------------------------------------------------------
 
-/** Parameters of the generic `particles` effect: an emitter placed at a position or target. */
+/**
+ * Parameters of the generic `particles` effect: an emitter placed at a position or target.
+ * `handle.update` changes `intensity` and the emitter properties listed in `EmitterUpdate`
+ * while it runs.
+ */
 export interface ParticlesParams extends EmitterConfig, PlacementParams {
   /** Multiplies the emission rate; change it at runtime with `handle.setIntensity`. Default 1. */
   readonly intensity?: number;
 }
 
-const EMITTER_KEYS = new Set(['intensity', 'rate']);
+/** What `handle.update` accepts on the `particles` effect. */
+export type ParticlesUpdate = EmitterUpdate & { readonly intensity?: number };
+
+/** Presets map their own parameters to an emitter, so only these two change at runtime. */
+const PRESET_UPDATE_KEYS: readonly string[] = ['intensity', 'rate'];
+const PARTICLES_UPDATE_KEYS: readonly string[] = ['intensity', ...EMITTER_UPDATE_KEYS];
 
 /**
  * An emitter that follows its placement. Used directly (`fx.play('particles', {...})`) and as
@@ -30,16 +39,30 @@ const EMITTER_KEYS = new Set(['intensity', 'rate']);
 export class ParticlesInstance implements EffectInstance {
   readonly emitter: ParticleEmitter;
   private readonly placement: Placement;
-  private readonly baseRate: number;
+  /** Quality and reduced-motion multiplier of counts and rates. */
+  private readonly scale: number;
+  private readonly updateKeys: readonly string[];
+  private baseRate: number;
   private intensity: number;
   private stopped = false;
   private lastDrawables: readonly Drawable[];
 
-  constructor(params: ParticlesParams, context: EffectContext, name = 'particles') {
+  /**
+   * `emitterUpdates`: accept every `EmitterUpdate` key in `setParams` (the `particles` effect);
+   * otherwise only `intensity` and `rate` (presets).
+   */
+  constructor(
+    params: ParticlesParams,
+    context: EffectContext,
+    private readonly name = 'particles',
+    emitterUpdates = false,
+  ) {
     this.placement = new Placement(params, context, name);
     this.intensity = checkNumber(params.intensity ?? 1, 'intensity', name, { min: 0, max: 10 });
+    this.updateKeys = emitterUpdates ? PARTICLES_UPDATE_KEYS : PRESET_UPDATE_KEYS;
     const quality = contextQuality(context);
     const scale = quality.particleScale * (context.reducedMotion ? 0.5 : 1);
+    this.scale = scale;
     this.emitter = new ParticleEmitter(params, context.random, { qualityScale: scale, transform: this.placement.matrix() });
     this.baseRate = (params.rate ?? 0) * scale;
     if (this.intensity !== 1 && this.baseRate > 0) this.emitter.setRate(this.baseRate * this.intensity);
@@ -68,17 +91,21 @@ export class ParticlesInstance implements EffectInstance {
   }
 
   setParams(patch: Readonly<Record<string, unknown>>): void {
-    for (const key of Object.keys(patch)) {
-      if (!EMITTER_KEYS.has(key)) throw new InvalidOptionError(`particles cannot change "${key}" while running (only intensity and rate).`);
+    const name = this.name;
+    const emitterPatch: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(patch)) {
+      if (!this.updateKeys.includes(key)) {
+        throw new InvalidOptionError(`${name} cannot change "${key}" while running (allowed: ${this.updateKeys.join(', ')}).`);
+      }
+      if (key !== 'intensity' && key !== 'rate' && value !== undefined) emitterPatch[key] = value;
     }
-    if (patch.intensity !== undefined) {
-      this.intensity = checkNumber(patch.intensity, 'intensity', 'particles', { min: 0, max: 10 });
-      if (!this.stopped && this.baseRate > 0) this.emitter.setRate(this.baseRate * this.intensity);
-    }
-    if (patch.rate !== undefined) {
-      const rate = checkNumber(patch.rate, 'rate', 'particles', { min: 0 });
-      if (!this.stopped) this.emitter.setRate(rate * this.intensity);
-    }
+    // Validate everything before changing anything.
+    const intensity = patch.intensity === undefined ? undefined : checkNumber(patch.intensity, 'intensity', name, { min: 0, max: 10 });
+    const rate = patch.rate === undefined ? undefined : checkNumber(patch.rate, 'rate', name, { min: 0 });
+    if (Object.keys(emitterPatch).length > 0) this.emitter.configure(emitterPatch);
+    if (intensity !== undefined) this.intensity = intensity;
+    if (rate !== undefined) this.baseRate = rate * this.scale;
+    if ((intensity !== undefined || rate !== undefined) && !this.stopped) this.emitter.setRate(this.baseRate * this.intensity);
   }
 
   dispose(): void {
@@ -90,7 +117,7 @@ export class ParticlesInstance implements EffectInstance {
 /** Generic particle emitter effect. */
 export const particles: EffectDefinition<ParticlesParams> = defineEffect<ParticlesParams>({
   name: 'particles',
-  create: (params, context) => new ParticlesInstance(params, context),
+  create: (params, context) => new ParticlesInstance(params, context, 'particles', true),
 });
 
 // --- flash ----------------------------------------------------------------------------------

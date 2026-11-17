@@ -7,7 +7,104 @@
 | 2. Runtime, scene graph and animation orchestration | **Done on Android** (2026-11-12, Android 17 emulator, Expo Go). iOS not verified. See below |
 | 3. Graphics engine, sprites, assets, RN anchoring | **Done on Android** (implemented 2026-11-12; verified by the owner on the Android 17 emulator, Expo Go, 2026-11-13). iOS not verified |
 | 4. Advanced effects, particles, shaders, composable FX | **Checked on Android by the owner, one fix pending re-check** (implemented 2026-11-13). The owner confirmed graphics and functions on the Android 17 emulator (2026-11-16) and reported effects trailing moving cards in the later demos; the fix (local effects layers) is implemented and tested, not yet re-checked on the emulator. iOS not verified. See below |
+| 4A. Effects runtime and advanced particle engine | **Implemented and tested in the container, ready for review** (2026-11-17). Not run on Android or iOS yet. See below |
+| 4B, 4C, 4D | Not started (not to begin without the owner) |
 | 5 and 6 | Not started (Phase 5 needs the owner's approval) |
+
+## Phase 4A: Effects runtime and advanced particle engine (2026-11-17)
+
+### Status
+
+**Implemented and tested in the container; not run on a device.** Automated tests, Android and iOS bundles and web screenshots (Skia through CanvasKit/WebGL in headless Chromium) back every item below. Nothing of Phase 4A has run on the Android emulator, a phone or iOS. The Phase 4 fire-lag fix (commit c56d06f, local effects layers) is also still waiting for the owner's emulator re-check.
+
+### Step 1: what was really there (audit, before any change)
+
+Baseline at c56d06f: `npm run check` passed, **34 suites, 413 tests**. The code, demos and tests were checked against each 4A requirement instead of trusting the docs:
+
+| 4A requirement | Before 4A | Tests that cover it | 4A change |
+| --- | --- | --- | --- |
+| Reusable effect definitions and instances | `defineEffect`, `defineComposite`, the `EffectInstance` contract | `runtime.test.ts`, `presets.test.ts` | None |
+| Effect registry | `engine.register`, `hasEffect`, the provider's `effects` prop, `builtInEffects` | `runtime.test.ts`, `index.test.ts` | None |
+| Start, pause, resume, cancel, dispose | `play`/`attach`, `EffectHandle` `pause`/`resume`/`stop`/`cancel`, `engine.dispose` | `runtime.test.ts`, `stress.test.ts` | None (new scenario tests) |
+| Sequential and parallel composition | `sequence`, `parallel`, `stagger`, timelines | `timeline.test.ts`, `sequences.test.ts` | None |
+| Integration with timelines | `fx.cue` items at exact timeline times | `sequences.test.ts` | None |
+| Attachment to scene nodes and RN targets | `target` + `follow` on every placed effect, `attach`, `GameFXTarget`, local effects layers | `targets.test.ts`, `localLayers.test.ts`, `phase4.test.tsx` | None |
+| Configurable emitters and particle properties | Every property at start; **a running emitter could only change `intensity` and `rate`** | `emitter.test.ts` | **Gap closed: live emitter changes** |
+| Point, line, circle, rect emission | All four, plus `path` | `emitter.test.ts` | None |
+| Local and world space | Both | `emitter.test.ts`, `localLayers.test.ts` | None |
+| Deterministic simulation | Seeded, closed-form motion, frame-rate independent | `emitter.test.ts` | Extended to runtime changes |
+| Pooling and resource management | `ParticlePool` (capacity buckets), `sharedParticlePool.stats` | `emitter.test.ts`, `stress.test.ts` | None |
+| Quality levels | Particle scale per level, adaptive quality | `runtime.test.ts` | **Defect fixed** (live `rate` ignored the quality scale) |
+| Showcase | Demos A to F; none showed several emitters changed while running, per-emitter pause/resume/cancel, emitters on moving scene objects, or cleanup with visible counters | – | **Gap closed: demo G, Emitter lab** |
+
+No regressions were found in the baseline. Two defects were found in the `particles` effect's `update`: a new `rate` skipped the quality and reduced-motion scale (on `low` it emitted almost 3× too much), and a later `setIntensity` went back to the rate the effect started with. Both are fixed and tested.
+
+### What was built
+
+- **Live emitter changes:** `ParticleEmitter.configure(patch)` and `handle.update(patch)` on the `particles` effect accept `EmitterUpdate`: `rate`, `shape`, `lifetime`, `speed`, `direction`, `spread`, `directionMode`, `size`, `rotation`, `angularVelocity`, `inheritVelocity`, `gravity`, `drag`, `colors`, `colorOverLife`, `opacity`, `scale`. Birth properties apply to new particles; `gravity` and `drag` act on live particles from their current position and velocity (each particle stores the time its motion restarted, `t0`, so the closed-form motion stays exact and frame-rate independent); colors and curves apply to live particles at once. The whole patch is validated before anything changes. Fixed for an emitter's life: `space`, `maxParticles`, `bursts`, `duration`, `look`, `aspect`, `stretch`, `blendMode`. Presets keep `intensity` and `rate`.
+- **Public types:** `EmitterUpdate`, `EMITTER_UPDATE_KEYS`, `ParticlesUpdate` (exported from both entry points).
+- **Showcase G, Emitter lab** (`example/EmitterLab.tsx`): a trail (point, world space) and a halo (circle, local space) on an orb that orbits a hub, a fountain (line, world space, gravity) and snow (rect, world space) from a sliding box. Per emitter: start, pause/resume, stop, cancel. Live steppers for rate, speed, spread, gravity, size and palette, sent through `handle.update`. Pause all, resume all, stop all, cancel all. Remove orb (destroys the scene node; its two emitters stop and end) and add orb. Counters twice a second: each emitter's status, live particles, engine effects, and the particle pool (allocated, reused, idle). Public `react-native-graphics` imports only; no animation code of its own.
+
+### The SDK for the brief's scenarios (step 3)
+
+Developers use the SDK without Skia or Reanimated. These already existed from Phase 4 and are unchanged; 4A adds live emitter control:
+
+```tsx
+<GameFXTarget id="card"><Card /></GameFXTarget>             // any React Native view
+
+const fire = fx.attach('card', { effect: 'fire-border', intensity: 0.8 });   // fire around a component
+const seq = fx.throwAndExplode('card', { throw: { height: 170, duration: 1000 }, explosion: { particles: 150 } });   // launch + impact explosion, one handle
+const glow = fx.attach('card', 'glow-pulse', {});                            // several effects on one target
+const sparks = fx.play('particles', { target: 'card', rate: 40, space: 'local' });
+sparks.update({ gravity: 200, colors: ['#FFD54A'] });                        // 4A: change it while it runs
+seq.playback.cancel();                                                       // cancels the sequence and its explosion
+```
+
+Nothing in the engine knows about cards or games: "card" is any target id.
+
+### Verification (commands run in the Linux cloud container, Node 22.23.4, npm 10.9.9)
+
+| Command | Result |
+| --- | --- |
+| `npm run check` (typecheck, lint, all tests, build) | **Pass: 35 suites, 428 tests, 0 failed** (413 before, 15 new). CanvasKit prints one `RuntimeEffect error ... unknown identifier 'nope'`: the intentional broken-shader test |
+| `npm run example:install`, then `cd example` and `npx tsc --noEmit` | Pass (the showcase type-checks against the packed SDK's public types) |
+| `cd example`, then `CI=1 EXPO_OFFLINE=1 npx expo export --platform android` | Pass (Hermes bundle, 1278 modules) |
+| `cd example`, then `CI=1 EXPO_OFFLINE=1 npx expo export --platform ios` | Pass (Hermes bundle, 1280 modules) |
+| `cd example`, then `CI=1 EXPO_OFFLINE=1 npx expo export --platform web --output-dir dist-web`, served locally, then `node scripts/capture-effects-showcase.js <folder> 2` | Pass, no page errors. 42 screenshots at 412 × 915 @2×, 9 of them of demo G (four emitters; fountain after live rate, spread and palette changes; trail and snow changed; all paused; fountain cancelled; orb removed; its emitters ended; orb added; lab ended). The lab's own counters, logged by the script: pool idle buffers 17 → 18 after cancelling the fountain → 20 after removing the orb (trail and halo ended); reused 36 → 38 after adding the orb; earlier demos still back to 0 active effects |
+| `npm run bench` (Node, not a device) | Pass. Same particle counts and pool numbers as Phase 4 for every scenario (the change does not alter results); per-frame engine times within run-to-run noise of the Phase 4 table (for example 5 explosions 0.50 ms average vs 0.61 ms, 10 fire borders on high 0.34 ms vs 0.23 ms) |
+
+New tests:
+- `src/particles/emitter.test.ts`, "live configuration" (8 tests): birth properties only for new particles; gravity and drag changes continuous in position and velocity, with the closed-form values checked; spin still counted from birth; colors and curves applied to live particles, also with a shorter palette; rate re-timed and quality-scaled; switching a `rate: 0` emitter on later; fixed and unknown keys and invalid values rejected with nothing changed (compared with an untouched twin emitter); identical particles with changes at 10 ms and 25 ms frames; dispose.
+- `src/engine/emitterLab.test.ts` (7 tests): the Emitter lab through the engine API, with the same calls as the demo. Four emitters at once on a rotating node and fixed positions; one emitter changed without touching the others; reversed gravity applied to every live particle from its current velocity; invalid updates leave results identical to a twin engine; presets reject emitter keys; per-handle pause and resume (frozen, no catch-up births) and cancel (storage back to the pool); removing the target (emitters stop, complete, storage back, a new orb reuses it); quality scaling of live rate changes; determinism and full release on dispose.
+- `src/engine/runtime.test.ts`: one assertion changed on purpose. It expected `speed` to be rejected by `particles`' `update`; it is now accepted, and a fixed key (`maxParticles`) is rejected.
+
+The two key mechanisms were also checked by mutation: without the motion restart on a force change, 2 tests fail; without the palette wrap-around, 1 test fails.
+
+Screenshots (real CanvasKit/WebGL rendering in headless Chromium, **not** a device) are in the project files under `phase4a/screenshots/`, with the script's log.
+
+**Not verified:** Phase 4A on the Android emulator, a phone or iOS; device frame times with the lab running.
+
+### Changed files
+
+- New: `example/EmitterLab.tsx`, `src/engine/emitterLab.test.ts`
+- Changed: `src/particles/{emitter,pool,index}.ts`, `src/particles/emitter.test.ts`, `src/effects/{primitives,index}.ts`, `src/engine/runtime.test.ts`, `example/EffectsDemo.tsx`, `example/package-lock.json` (tarball hash), `scripts/capture-effects-showcase.js`, `README.md`, `docs/{EFFECTS,API,TESTING,PROGRESS}.md`
+
+### Limitations
+
+- `space`, `maxParticles`, `bursts`, `duration`, `look`, `aspect`, `stretch` and `blendMode` cannot change while an emitter runs; start a new one (a replacement `key` swaps it in one call).
+- A change applies from the last frame before it, so changes between two frames all take effect at that frame's time.
+- An emitter started with no `rate` and no `duration` is a burst emitter and ends after its bursts; start with `rate: 0, duration: Infinity` to switch emission on later.
+- The overlay is not clipped by scroll containers: lab particles and scene shapes scrolled under the showcase's fixed header are drawn over it (visible in the web screenshots).
+- Emitter positions can only follow a target or a scene node; moving a fixed `position` at runtime means animating a node and following it, as the lab does.
+
+### Remaining Phase 4 milestones (not started)
+
+4B, 4C and 4D, as the owner defines them, and Phase 5. None was started.
+
+### Next step
+
+1. The owner checks demo G on the Android 17 emulator (Expo Go): Start lab; change the fountain's rate, spread and palette; Pause all and Resume all; cancel one emitter; Remove orb and watch the pool's idle count rise; Add orb and watch reused rise; End lab. The same session can re-check the c56d06f fix (B with "Fire on card", E with "Fire on all" then "Spin all" and "Flip all", scrolling with fire on).
+2. 4B and later start only after the owner's review.
 
 ## Phase 4: Advanced visual effects, particle systems and composable game FX (2026-11-13)
 

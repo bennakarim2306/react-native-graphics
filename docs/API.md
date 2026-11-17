@@ -149,6 +149,7 @@ interface PlayOptions {
 }
 ```
 
+- `update` validates the whole patch first and throws `InvalidOptionError` without changing anything. What each effect accepts is in [EFFECTS.md §2](EFFECTS.md#2-built-in-effects). The generic `particles` effect accepts `intensity` and every key of `EmitterUpdate` (`ParticlesUpdate` type): rate, shape, lifetime, speed, direction, spread, directionMode, size, rotation, angularVelocity, inheritVelocity, gravity, drag, colors, colorOverLife, opacity, scale; see [EFFECTS.md §3](EFFECTS.md#3-particle-system) for what each change affects. `ParticleEmitter.configure(patch)` does the same on an emitter used directly, and `EMITTER_UPDATE_KEYS` lists the keys.
 - `finished` **never rejects**, so cancelled or skipped effects cannot cause unhandled promise rejections.
 - Invalid parameters or unknown effect names throw `InvalidOptionError` **synchronously** from `play`, before anything is allocated.
 - Using a disposed engine throws `DisposedError`.

@@ -132,7 +132,7 @@ Effects that stay fixed to the card (the flames, glows, pulses) are drawn in a s
 
 `example/` is a separate Expo SDK 58 app that installs the packed SDK tarball and imports only the public entry point. It has four tabs:
 
-- **Effects** (Phase 4, "GameFX Effects Showcase"): A fire border on an ordinary card with intensity, color, move, rotate and scale controls; B Throw & Explode with cancel at any moment; C an effects playground; D a gallery of every preset; E several effects combined on the same targets; F performance scenarios with an on-screen meter (FPS of the effects loop, JS work per frame, particle counts).
+- **Effects** (Phase 4, "GameFX Effects Showcase"): A fire border on an ordinary card with intensity, color, move, rotate and scale controls; B Throw & Explode with cancel at any moment; C an effects playground; D a gallery of every preset; E several effects combined on the same targets; F performance scenarios with an on-screen meter (FPS of the effects loop, JS work per frame, particle counts); G an emitter lab (Phase 4A) with four emitters at once (point, circle, line, rect; world and local space) on moving scene objects, live changes of rate, speed, spread, gravity, size and colors, pause, resume, stop and cancel per emitter, and removing the orb they follow, with pool counters.
 - **Particles** (Phase 1 bursts).
 - **Motion** (Phase 2: orbiting hierarchy, staggered keyframe loops, and a thrown card whose `impact` marker triggers a burst, with cancel, rewind, skip and pause buttons).
 - **Graphics** (Phase 3: sprite animation, hierarchical transforms, 100 sprites per tap, glow, shaders, clipping, grayscale and blur, borders around a normal React Native button).
