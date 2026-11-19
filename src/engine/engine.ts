@@ -3,7 +3,7 @@ import type { Playback, PlaybackHost, PlaybackResult } from '../animation/playba
 import { Playable, Wait } from '../animation/playable';
 import type { PlayableOptions, PlayableRunner, PropertyAnimationLike } from '../animation/playable';
 import { parallel, sequence, stagger, Timeline } from '../animation/timeline';
-import { KeyframeAnimation, Tween } from '../animation/tween';
+import { KeyframeAnimation, PropertyAnimation, Tween } from '../animation/tween';
 import type { KeyframeOptions, TweenVars } from '../animation/tween';
 import type { AnimationTarget } from '../animation/target';
 import type { Clock } from '../runtime/clock';
@@ -14,9 +14,11 @@ import type {
   EffectDefinition,
   EffectInstance,
   EffectServices,
+  TargetConcealment,
+  TargetSnapshot,
   TransformOffset,
 } from '../runtime/effect';
-import { AdaptiveQuality, resolveQuality } from '../runtime/quality';
+import { AdaptiveQuality, DEFAULT_QUALITY, resolveQuality } from '../runtime/quality';
 import type { AdaptiveQualityOptions, QualityLevel, QualityProfile } from '../runtime/quality';
 import { Emitter, rethrowAsync } from '../runtime/emitter';
 import type { ErrorReporter, Unsubscribe } from '../runtime/emitter';
@@ -137,6 +139,29 @@ export interface FrameEvent {
   readonly activeCount: number;
   /** Offset of the whole overlay (screen shake), to apply when drawing. */
   readonly camera: { readonly x: number; readonly y: number; readonly rotation: number };
+}
+
+/**
+ * A snapshot of what an engine holds, for diagnostics and leak checks (`engine.stats`).
+ * After every effect and playback ended and every `<GameFXTarget>` unmounted, `activeEffects`,
+ * `playbacks`, `targets` and `localLayers` are 0 and `frameLoop` is false.
+ */
+export interface EngineStats {
+  readonly state: EngineState;
+  /** Effects playing or paused. */
+  readonly activeEffects: number;
+  /** Animation playbacks playing or paused (timelines count once). */
+  readonly playbacks: number;
+  /** Scene nodes, including target proxy nodes. */
+  readonly sceneNodes: number;
+  /** Registered host targets (`<GameFXTarget>`s). */
+  readonly targets: number;
+  /** Targets that currently draw effects in their own local layer. */
+  readonly localLayers: number;
+  /** True while the engine is subscribed to its clock (it only is while something animates). */
+  readonly frameLoop: boolean;
+  /** The asset manager's counts: registered, loaded and loading images, decoded bytes. */
+  readonly assets: { readonly registered: number; readonly loaded: number; readonly loading: number; readonly bytes: number };
 }
 
 export interface EngineEvents {
@@ -335,6 +360,7 @@ export class Engine implements PlayableRunner {
   private readonly playbackHost: PlaybackHost;
   private unsubscribeClock: Unsubscribe | null = null;
   private nextId = 1;
+  private snapshotCount = 0;
   private currentState: EngineState = 'running';
   private lastDrawables: readonly Drawable[] = [];
   private inFrame = false;
@@ -379,7 +405,7 @@ export class Engine implements PlayableRunner {
         this.onPlaybackEnded(playback, result);
       },
     };
-    this.qualityProfile = resolveQuality(options.quality ?? 'medium');
+    this.qualityProfile = resolveQuality(options.quality ?? DEFAULT_QUALITY);
     const adaptive = options.adaptiveQuality;
     this.adaptive = adaptive
       ? new AdaptiveQuality(this.qualityProfile.level, typeof adaptive === 'object' ? adaptive : {})
@@ -396,6 +422,8 @@ export class Engine implements PlayableRunner {
       get capabilities() {
         return capabilities();
       },
+      concealTarget: (node, opacity) => this.concealNode(node, opacity),
+      snapshotTarget: (node) => this.snapshotNode(node),
     };
     for (const definition of options.effects ?? []) this.register(definition);
   }
@@ -460,6 +488,74 @@ export class Engine implements PlayableRunner {
     return node;
   }
 
+  /** Conceals a host target's view, or hides a plain scene node (see `TargetConcealment`). */
+  private concealNode(node: SceneNode, opacity = 0): TargetConcealment | null {
+    if (node.destroyed) return null;
+    const id = this.targets.idOf(node);
+    if (id !== undefined) return this.targets.conceal(id, opacity);
+    // A node the engine draws itself: its own opacity, restored exactly on reveal.
+    const original = node.opacity;
+    const state = { opacity: Math.min(1, Math.max(0, opacity)), active: true };
+    const apply = () => {
+      if (!node.destroyed) node.opacity = original * state.opacity;
+    };
+    apply();
+    return {
+      get opacity() {
+        return state.opacity;
+      },
+      set opacity(v: number) {
+        if (!state.active || !Number.isFinite(v)) return;
+        state.opacity = Math.min(1, Math.max(0, v));
+        apply();
+      },
+      get active() {
+        return state.active;
+      },
+      reveal: () => {
+        if (!state.active) return;
+        state.active = false;
+        if (!node.destroyed) node.opacity = original;
+      },
+      vanish: () => {
+        if (!state.active) return;
+        state.active = false;
+        if (node.destroyed) return;
+        node.visible = false;
+        node.opacity = original;
+      },
+    };
+  }
+
+  /**
+   * A picture of a host target's view as an image asset, freed by `release`. Null when the node
+   * is not a host target or its host cannot take pictures. The target is measured again first,
+   * so whoever draws the picture in its place draws it where the view is now.
+   */
+  private snapshotNode(node: SceneNode): Promise<TargetSnapshot> | null {
+    const id = this.targets.idOf(node);
+    if (id === undefined || !this.targets.canSnapshot(id)) return null;
+    this.targets.requestRemeasure(id);
+    const pending = this.targets.snapshot(id);
+    if (!pending) return null;
+    return pending.then((loaded) => {
+      if (this.currentState === 'disposed') throw new DisposedError('Engine');
+      const assetId = `gamefx:snapshot:${id}:${String(++this.snapshotCount)}`;
+      const image = this.assets.addImage(assetId, loaded);
+      image.retain();
+      let released = false;
+      return {
+        image,
+        release: () => {
+          if (released) return;
+          released = true;
+          image.release();
+          if (this.currentState !== 'disposed' && this.assets.has(assetId)) this.assets.remove(assetId);
+        },
+      };
+    });
+  }
+
   private addCameraOffset(): TransformOffset {
     const values = { x: 0, y: 0, rotation: 0 };
     const offset = {
@@ -510,6 +606,20 @@ export class Engine implements PlayableRunner {
   /** Number of animation playbacks (playing or paused). */
   get playbackCount(): number {
     return this.playbacks.length;
+  }
+
+  /** What the engine holds right now (see `EngineStats`). Works after `dispose` too. */
+  get stats(): EngineStats {
+    return {
+      state: this.currentState,
+      activeEffects: this.active.length,
+      playbacks: this.playbacks.length,
+      sceneNodes: this.scene.nodeCount,
+      targets: this.targets.ids.length,
+      localLayers: this.targets.localLayerCount,
+      frameLoop: this.unsubscribeClock !== null,
+      assets: this.assets.stats,
+    };
   }
 
   /** Drawables published by the most recent frame. */
@@ -844,6 +954,13 @@ export class Engine implements PlayableRunner {
     this.inFrame = true;
     if (this.currentState === 'running') {
       for (const playback of [...this.playbacks]) {
+        // A tween or keyframe animation whose object is gone (node destroyed, target view
+        // unmounted) has nothing left to do; ending it lets an endless one stop the frame loop.
+        // Timelines keep running: they may animate other objects and fire cues.
+        if (playback.root instanceof PropertyAnimation && playback.root.target.destroyed === true) {
+          playback.cancelWith('targetDestroyed');
+          continue;
+        }
         try {
           playback.tick();
         } catch (error) {

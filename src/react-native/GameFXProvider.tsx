@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { AccessibilityInfo } from 'react-native';
+import { AccessibilityInfo, AppState } from 'react-native';
+import type { AppStateStatus } from 'react-native';
 import { builtInEffects } from '../effects';
 import type { AdaptiveQualityOptions, QualityLevel, QualityProfile } from '../runtime/quality';
 import type { Clock } from '../runtime/clock';
@@ -38,7 +39,7 @@ export interface GameFXProviderProps {
   /** Image loader override (tests, custom sources). Defaults to the Skia loader. */
   readonly imageLoader?: ImageLoader;
   /**
-   * Detail level: `low`, `medium` or `high` (default), or a custom profile. Changing the prop
+   * Detail level: `low`, `medium` (default) or `high`, or a custom profile. Changing the prop
    * applies to effects started afterwards.
    */
   readonly quality?: QualityLevel | QualityProfile;
@@ -49,6 +50,12 @@ export interface GameFXProviderProps {
    * operating system's "reduce motion" setting; `true`/`false` force it.
    */
   readonly reducedMotion?: boolean | 'system';
+  /**
+   * Pause the engine while the app is in the background and resume it when the app is active
+   * again, so effects continue where they were instead of jumping ahead by the time spent away.
+   * An engine the app paused itself is left alone. Default true.
+   */
+  readonly pauseInBackground?: boolean;
 }
 
 /**
@@ -74,6 +81,7 @@ export function GameFXProvider({
   quality,
   adaptiveQuality,
   reducedMotion = 'system',
+  pauseInBackground = true,
 }: GameFXProviderProps): ReactNode {
   const [engine, setEngine] = useState<Engine | null>(null);
 
@@ -123,6 +131,28 @@ export function GameFXProvider({
       subscription.remove();
     };
   }, [engine, reducedMotion]);
+
+  // Background: pause (only an engine that is running), resume what this effect paused.
+  useEffect(() => {
+    if (!engine || !pauseInBackground || engine.state === 'disposed') return undefined;
+    let pausedHere = false;
+    const apply = (status: AppStateStatus) => {
+      if (engine.state === 'disposed') return;
+      if (status === 'background' && engine.state === 'running') {
+        pausedHere = true;
+        engine.pause();
+      } else if (status === 'active' && pausedHere) {
+        pausedHere = false;
+        if (engine.state === 'paused') engine.resume();
+      }
+    };
+    if (AppState.currentState === 'background') apply('background');
+    const subscription = AppState.addEventListener('change', apply);
+    return () => {
+      subscription.remove();
+      if (pausedHere && engine.state === 'paused') engine.resume();
+    };
+  }, [engine, pauseInBackground]);
 
   return <GameFXContext.Provider value={engine}>{children}</GameFXContext.Provider>;
 }

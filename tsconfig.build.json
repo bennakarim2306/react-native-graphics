@@ -2,10 +2,9 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
-    "declaration": true,
-    "declarationMap": true,
+    "declaration": false,
     "sourceMap": true,
-    "outDir": "lib",
+    "outDir": "lib/module",
     "rootDir": "src",
     "types": [
       "react-native"

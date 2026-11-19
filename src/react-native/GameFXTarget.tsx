@@ -1,7 +1,7 @@
 import { Canvas, Picture } from '@shopify/react-native-skia';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentRef, ReactNode } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 import type { LayoutChangeEvent, StyleProp, ViewStyle } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { anchoredTo, localLayerMatrix, localOverflow } from '../engine/localLayers';
@@ -9,6 +9,7 @@ import type { Drawable } from '../runtime/effect';
 import type { TargetViewTransform } from '../scene/targets';
 import { acquireRenderer, blankPicture, releaseRenderer } from './sharedRenderer';
 import { useGameFXEngine } from './useGameFX';
+import { canSnapshotViews, snapshotView } from './viewSnapshot';
 
 export interface GameFXTargetProps {
   /** Stable name used by `fx.attach(id, ...)`. Must be unique within the provider. */
@@ -77,6 +78,16 @@ interface LayerState {
   handoff: number;
 }
 
+/** Resolves after `count` animation frames (the UI has applied pending style changes). */
+const nextFrames = (count: number): Promise<void> =>
+  new Promise((resolve) => {
+    const step = (left: number) => {
+      if (left <= 0) resolve();
+      else requestAnimationFrame(() => { step(left - 1); });
+    };
+    step(count);
+  });
+
 const isIdentity = (t: TargetViewTransform): boolean =>
   t.translateX === 0 && t.translateY === 0 && t.rotation === 0 && t.scaleX === 1 && t.scaleY === 1;
 
@@ -117,22 +128,36 @@ export function GameFXTarget({ id, children, style, trackEveryFrame = false, rot
   const scaleX = useSharedValue(1);
   const scaleY = useSharedValue(1);
   const opacity = useSharedValue(1);
+  /** Opacity factor while an effect conceals the view (burn-away draws a picture instead). */
+  const concealed = useSharedValue(1);
+  /** 0 while the view is captured, so effects drawn in its local layer stay out of the picture. */
+  const layerOpacity = useSharedValue(1);
 
   const flat = useMemo(() => StyleSheet.flatten(style) as ViewStyle | undefined, [style]);
   const styleTransform = useMemo(() => (Array.isArray(flat?.transform) ? flat.transform : []) as NonNullable<ViewStyle['transform']>, [flat]);
   const styleOpacity = typeof flat?.opacity === 'number' ? flat.opacity : 1;
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    opacity: styleOpacity * opacity.value,
-    transform: [
-      { translateX: translateX.value },
-      { translateY: translateY.value },
-      { rotate: `${String(rotate.value)}deg` },
-      { scaleX: scaleX.value },
-      { scaleY: scaleY.value },
-      ...(styleTransform as object[]),
-    ] as NonNullable<ViewStyle['transform']>,
-  }));
+  // Explicit 'worklet' directives: the callbacks run on the UI thread whichever build of the
+  // SDK the app's bundler picks (Reanimated's Babel plugin also detects them by name).
+  const animatedStyle = useAnimatedStyle(() => {
+    'worklet';
+    return {
+      opacity: styleOpacity * opacity.value * concealed.value,
+      transform: [
+        { translateX: translateX.value },
+        { translateY: translateY.value },
+        { rotate: `${String(rotate.value)}deg` },
+        { scaleX: scaleX.value },
+        { scaleY: scaleY.value },
+        ...(styleTransform as object[]),
+      ] as NonNullable<ViewStyle['transform']>,
+    };
+  });
+
+  const layerStyle = useAnimatedStyle(() => {
+    'worklet';
+    return { opacity: layerOpacity.value };
+  });
 
   const measure = useCallback(() => {
     const view = ref.current;
@@ -184,13 +209,32 @@ export function GameFXTarget({ id, children, style, trackEveryFrame = false, rot
         measure();
       }
     });
+    const offConceal = engine.targets.on('conceal', (e) => {
+      if (e.id === id) concealed.value = e.opacity;
+    });
+    if (canSnapshotViews()) {
+      engine.targets.setSnapshotter(id, async () => {
+        // Effects in the local layer (a fire border) must not end up in the picture.
+        const hideLayer = layer.current.drawn;
+        if (hideLayer) {
+          layerOpacity.value = 0;
+          await nextFrames(2);
+        }
+        try {
+          return await snapshotView(ref);
+        } finally {
+          if (hideLayer) layerOpacity.value = 1;
+        }
+      });
+    }
     const offFrame = trackEveryFrame ? engine.on('frame', measure) : undefined;
     return () => {
       offRemeasure();
       offTransform();
+      offConceal();
       offFrame?.();
       if (engine.state !== 'disposed') engine.targets.unregister(id);
-      // A remounted target starts untransformed.
+      // A remounted target starts untransformed and visible.
       transformed.current = false;
       pendingMeasure.current = false;
       translateX.value = 0;
@@ -199,8 +243,10 @@ export function GameFXTarget({ id, children, style, trackEveryFrame = false, rot
       scaleX.value = 1;
       scaleY.value = 1;
       opacity.value = 1;
+      concealed.value = 1;
+      layerOpacity.value = 1;
     };
-  }, [engine, id, trackEveryFrame, measure, translateX, translateY, rotate, scaleX, scaleY, opacity]);
+  }, [engine, id, trackEveryFrame, measure, translateX, translateY, rotate, scaleX, scaleY, opacity, concealed, layerOpacity]);
 
   // Rotation and scale props apply without waiting for a layout change.
   useEffect(() => {
@@ -282,18 +328,18 @@ export function GameFXTarget({ id, children, style, trackEveryFrame = false, rot
     <Animated.View ref={ref} collapsable={false} onLayout={measure} style={[style, animatedStyle]} testID={testID}>
       {children}
       {layerMargin !== null ? (
-        <View
+        <Animated.View
           pointerEvents="none"
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
           onLayout={onLayerLayout}
-          style={[styles.layer, { top: -layerMargin, left: -layerMargin, right: -layerMargin, bottom: -layerMargin }]}
+          style={[styles.layer, { top: -layerMargin, left: -layerMargin, right: -layerMargin, bottom: -layerMargin }, layerStyle]}
           testID={testID !== undefined ? `${testID}-effects` : undefined}
         >
           <Canvas style={StyleSheet.absoluteFill}>
             <Picture picture={layerPicture} />
           </Canvas>
-        </View>
+        </Animated.View>
       ) : null}
     </Animated.View>
   );

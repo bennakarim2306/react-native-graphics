@@ -20,6 +20,11 @@ export interface ShaderDefinition {
   readonly name: string;
   readonly source: string;
   readonly uniforms: readonly ShaderUniform[];
+  /**
+   * Names of the child shaders the source declares (`uniform shader image;`), in declaration
+   * order. Fills supply an image for each one (`ShaderFill.children`). Empty for most shaders.
+   */
+  readonly children: readonly string[];
   /** Solid color used when the shader cannot run. */
   readonly fallback: string;
 }
@@ -29,6 +34,8 @@ export interface ShaderOptions {
   readonly source: string;
   /** Uniform defaults in declaration order: `{ time: 0, size: [0, 0], color: [1, 0.5, 0, 1] }`. */
   readonly uniforms?: Readonly<Record<string, number | readonly number[]>>;
+  /** Child shader names in declaration order (see `ShaderDefinition.children`). */
+  readonly children?: readonly string[];
   readonly fallback?: string;
 }
 
@@ -48,11 +55,22 @@ export function defineShader(options: ShaderOptions): ShaderDefinition {
     }
     uniforms.push({ name, value });
   }
+  const children = [...(options.children ?? [])];
+  for (const child of children) {
+    const name: unknown = child;
+    if (typeof name !== 'string' || !/^[A-Za-z_]\w*$/.test(name) || !new RegExp(`uniform\\s+shader\\s+${name}\\s*;`).test(options.source)) {
+      throw new InvalidOptionError(`Shader "${options.name}" lists child "${String(name)}" but its source does not declare "uniform shader ${String(name)};".`);
+    }
+    if (uniforms.some((u) => u.name === child) || children.indexOf(child) !== children.lastIndexOf(child)) {
+      throw new InvalidOptionError(`Shader "${options.name}" child "${child}" is declared twice.`);
+    }
+  }
   return {
     kind: 'shader',
     name: options.name,
     source: options.source,
     uniforms,
+    children,
     fallback: options.fallback ?? '#FFFFFF',
   };
 }

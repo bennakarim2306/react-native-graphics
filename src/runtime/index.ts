@@ -1,4 +1,4 @@
-export { DisposedError, InvalidOptionError } from './errors';
+export { DisposedError, InvalidOptionError, NotReadyError } from './errors';
 export { Emitter, rethrowAsync } from './emitter';
 export type { ErrorReporter, Listener, Unsubscribe } from './emitter';
 export { FrameClock, VirtualClock } from './clock';
@@ -13,8 +13,10 @@ export type {
   EffectDefinition,
   EffectInstance,
   EffectServices,
+  TargetConcealment,
+  TargetSnapshot,
   TransformOffset,
 } from './effect';
-export { AdaptiveQuality, QUALITY_PROFILES, resolveQuality } from './quality';
+export { AdaptiveQuality, DEFAULT_QUALITY, QUALITY_PROFILES, resolveQuality } from './quality';
 export type { AdaptiveQualityOptions, QualityLevel, QualityProfile } from './quality';
 export { LocalTimer } from './timer';

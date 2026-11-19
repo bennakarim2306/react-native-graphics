@@ -7,6 +7,7 @@ export type {
   EngineEvents,
   EngineOptions,
   EngineState,
+  EngineStats,
   FrameEvent,
   PlayOptions,
   TargetParams,

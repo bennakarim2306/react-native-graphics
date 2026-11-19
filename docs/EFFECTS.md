@@ -1,10 +1,10 @@
-# Effects guide (Phase 4, visual quality revised in Phase 4.5)
+# Effects guide (0.1.0-rc.0)
 
 How to play, attach, combine and write effects; how particles and shaders work; and how effects follow ordinary React Native views. Every example uses the public `react-native-graphics` entry point and matches the implementation and its tests. The full type reference is in [API.md](API.md).
 
 Contents:
 1. [Playing and controlling effects](#1-playing-and-controlling-effects)
-2. [Built-in effects](#2-built-in-effects)
+2. [Built-in effects](#2-built-in-effects) (2.2: [reference of every effect](#22-effect-reference))
 3. [Particle system](#3-particle-system)
 4. [Shader system](#4-shader-system)
 5. [Composition: timelines, cues and Throw & Explode](#5-composition-timelines-cues-and-throw--explode)
@@ -56,7 +56,7 @@ All effects run on the engine clock (one clock per provider). There are no separ
 
 ## 2. Built-in effects
 
-Fifteen effects are registered by default. Numbers are points, ms or degrees. "Target" means the effect accepts `target` (and therefore `fx.attach`); "updates" lists what `update()` accepts.
+Sixteen effects are registered by default. Numbers are points, ms or degrees. "Target" means the effect accepts `target` (and therefore `fx.attach`); "updates" lists what `update()` accepts.
 
 | Effect | What it is | Main parameters (defaults) | Updates |
 | --- | --- | --- | --- |
@@ -71,6 +71,7 @@ Fifteen effects are registered by default. Numbers are points, ms or degrees. "T
 | `flash` | Short radial light | `radius` 90, `duration` 220, `color`, `intensity` 1 | `intensity` |
 | `screen-shake` | Shakes the overlay and/or host views | `scope` `overlay` (or target ids/nodes, or a list), `amplitude` 8, `rotation` 0, `duration` 400, `frequency` 28, `intensity` 1 | `intensity` |
 | `victory` | Composite: a soft bloom, confetti cannons at both edges and a centre burst, two waves of golden sparks, a shockwave ring and a glow pulse | `width` 280, `intensity` 1, `colors`, `glow` true | `intensity` |
+| `burn-away` | The target burns away and stays hidden: a ragged edge sweeps across it, browning and charring it ahead of a glowing rim, with flames, embers, smoke and ash flakes (section 2.1) | `from` `bottom` (`top`, `left`, `right`, `center`, a corner such as `bottom-right`, `random`, or `{ x, y }` from 0 to 1), `duration` 1600, `roughness` 0.6 (0–1), `color` `#FF7A1A` (edge and flames), `charColor` `#2B1A0D`, `charWidth` 14, `edgeWidth` 3, `intensity` 1 (0–2), `flames`/`embers`/`smoke`/`ash` true, `cornerRadius` 10, `image` (default: a snapshot of the view). Target required | – |
 | `particles` | The generic emitter (section 3) as an effect | every `EmitterConfig` field, plus `intensity` (multiplies the rate) | `intensity` and every `EmitterUpdate` key (section 3) |
 | `particle-burst` | The Phase 1 one-shot burst | `count`, `duration`, `colors`, `speed`, `gravity`… | – |
 | `glow-border`, `energy-border` | Phase 3 outline effects | see [API.md](API.md) | – |
@@ -78,6 +79,106 @@ Fifteen effects are registered by default. Numbers are points, ms or degrees. "T
 Placement (every effect except the borders and `screen-shake`): `position` (overlay coordinates) **or** `target`; `offset` (a point in the target's local space, so it rotates with it); `follow` (default true: keep following the target; false: capture its position at start, for an explosion that stays where the impact happened).
 
 Each built-in effect validates its parameters when it starts and throws `InvalidOptionError` with the effect and parameter names.
+
+### 2.1 `burn-away`: a view that burns away
+
+```ts
+const handle = fx.play('burn-away', { target: 'card', from: 'bottom-right', duration: 1800 });
+await handle.finished; // { status: 'completed' }: the card is gone
+fx.getTarget('card')?.motion.reset(); // or animate motion.opacity back to 1 to show it again
+```
+
+How it works on iOS and Android:
+
+1. The `<GameFXTarget>` takes a picture of its view with React Native Skia (`makeImageFromView`): the view and its children, untransformed, in physical pixels. Effects drawn in the view's local layer (a fire border) are hidden for two frames during the capture so they do not end up in the picture. The target is measured again at the same time.
+2. The effect draws the picture where the view is (the overlay), with the view's motion: it moves, rotates and scales with it. Two frames later the real view is concealed (its opacity is multiplied by 0; layout, touches of other views and the engine's motion are unchanged). The overlap avoids a flicker.
+3. A shader (`burnPaperShader`) burns the picture: a ragged edge (sums of sine waves, so the GPU and the CPU agree on where it is) travels from `from`; ahead of it the picture browns and chars over `charWidth` points; the edge glows (`edgeWidth`, `color`); behind it nothing is left. An additive pass (`burnGlowShader`) adds the hot line, a halo, dying embers and flickering specks.
+4. Flames, embers, smoke and ash are born on the same edge, which the effect solves on the CPU every frame (`burnFront`), and rise on screen whatever the view's rotation.
+5. When everything burned, the view is hidden through its motion (`motion.opacity = 0`), the concealment ends and the picture is freed. The glowing edge dies out over 450 ms, and the effect completes when the last smoke, embers and ash have faded (up to about 1.8 s after the view is gone).
+
+`cancel()` and `stop()` at any moment, also while the picture is being taken, show the view again exactly as it was and free the picture. The app owns the hidden state afterwards: `motion.opacity = 1` (or `motion.reset()`) shows the view again. Game state never depends on the burn: the effect only hides a view.
+
+Scene nodes with an image shape burn their own image (the node is hidden with its opacity during the burn and `visible = false` at the end). Any target can also be given an explicit `image` (for example the card art the app already has).
+
+**Fallback.** Where no picture can be taken (React Native Web, or the capture failed or took longer than 800 ms), the effect draws charring over the visible view (`burnCharShader`: scorch ahead of the edge, black behind it, clipped to a rounded rectangle of `cornerRadius`), the same glowing edge and particles, and fades the view out over the last 40 % of `duration`. Without runtime shaders, the picture fades while the particles burn along the edge. Quality: `low` uses a cheaper edge (no fibres, no flicker) and no smoke or ash; reduced motion also drops smoke and ash.
+
+### 2.2 Effect reference
+
+Defaults are in the table above; every parameter not listed as required is optional. **Target types:** "view" is a `<GameFXTarget>` id or its handle (`fx.getTarget(id)`), "node" a scene node or sprite; "position" is a point in overlay coordinates (`fx.fromWindow` converts touches). Every effect returns an `EffectHandle` (`stop()` graceful, `cancel()` immediate, `finished` never rejects). Under reduced motion, shakes are off, flashes are smaller and particle counts are halved.
+
+**`fire-border`.** Procedural flames around a view's or node's outline that follow it as it moves, rotates and scales.
+Required: `target` (or `fx.attach(target, ...)`). Targets: view, node. Runs until `stop()`, `duration` or the target unmounts.
+`fx.attach('card', 'fire-border', { intensity: 1, color: '#2F7BFF' })`
+Limitations: the full look needs runtime shaders (falls back to particle flames without them, `mode: 'particles'` forces it); no glow on `low`; drawn around the view, never into it. Known issue from the owner's device check: reads as a soft, even halo with little flame detail.
+
+**`burn-away`.** The view burns away from an edge and stays hidden until the app shows it again (`motion.reset()`).
+Required: `target`. Targets: view (burns a picture of it), node (burns its image shape or `image`). Completes when the last smoke has faded (up to about 1.8 s after the burn).
+`fx.play('burn-away', { target: 'card', from: 'bottom-right', duration: 1800 })`
+Limitations: the picture is taken when the burn starts; without a picture (the web, a node without an image) the view chars and fades instead; view capture not run on a device yet.
+
+**`explosion`.** Layered blast: bloom, fireball, flash, shockwave, sparks, embers, smoke, optional debris and shake.
+Required: `position` or `target`. Targets: position, view, node. Use `follow: false` so it stays where the impact happened.
+`fx.play('explosion', { target: 'card', follow: false, intensity: 0.8, debris: true, screenShake: { scope: ['card'] } })`
+Limitations: halos of sparks only on `high`; known issue: a card at the impact can look washed out grey.
+
+**`confetti`.** Tumbling paper strips launched in a cone.
+Required: `position` or `target`. Targets: position, view, node.
+`fx.play('confetti', { target: 'badge', offset: { x: 0, y: -30 }, count: 120 })`
+Limitations: pieces fall freely and can leave the area they started in (no clipping to a container).
+
+**`golden-sparks`.** Bright additive streaks; a burst, a continuous stream (`rate`), or both.
+Required: `position` or `target`. Targets: position, view, node. With `rate` > 0 runs until `stop()` or `duration`.
+`fx.attach('badge', 'golden-sparks', { count: 0, rate: 30 })`
+Limitations: halos only on `high`.
+
+**`smoke`.** Rising, spreading soft puffs.
+Required: `position` or `target`. Targets: position, view, node. Runs until `stop()` unless `duration` is set.
+`fx.play('smoke', { target: 'chimney', duration: 3000 })`
+Limitations: those of the particle system (section 3).
+
+**`trail`.** Particles left behind a moving target.
+Required: `target` (throws without one). Targets: view, node. Runs until `stop()` or the target goes.
+`fx.attach('comet', 'trail', { rate: 80, look: 'spark' })`
+Limitations: a view moved by something other than its `motion` binding is only followed as fast as it is measured (`trackEveryFrame`).
+
+**`glow-pulse`.** A soft light ring that breathes around a target.
+Required: none (`target` or `position`; `size` without a target). Targets: view, node, position. Infinite pulses by default: runs until `stop()`.
+`fx.attach('button', 'glow-pulse', { pulses: 2, shape: 'circle', color: '#FFC83D' })`
+Limitations: the blur is drawn only on `high`; `medium` and `low` draw the ring without blur.
+
+**`shockwave`.** Expanding ring(s) with a bright edge.
+Required: `position` or `target`. Targets: position, view, node.
+`fx.play('shockwave', { position: { x: 200, y: 300 }, radius: 160 })`
+
+**`flash`.** Short radial light.
+Required: `position` or `target`. Targets: position, view, node.
+`fx.play('flash', { target: 'card', radius: 110 })`
+Limitations: smaller under reduced motion.
+
+**`screen-shake`.** Shakes everything the overlay draws and/or host views.
+Required: none (`scope` defaults to `overlay`). Targets: `overlay`, view ids or nodes, or a list.
+`fx.play('screen-shake', { scope: ['overlay', 'board'], amplitude: 10, duration: 450 })`
+Limitations: does nothing under reduced motion; host views shake through their `<GameFXTarget>` binding, other views do not move.
+
+**`victory`.** A celebration: bloom, confetti cannons, a centre burst, two waves of golden sparks, a ring and a glow.
+Required: `position` or `target`. Targets: position, view, node.
+`fx.play('victory', { target: 'stage', follow: false, width: 260 })`
+Limitations: a composite of many emitters; on `low` it is much sparser.
+
+**`particles`.** The generic emitter (section 3) as an effect: shapes, bursts, rates, curves, live changes.
+Required: `position` or `target`. Targets: position, view, node.
+`fx.play('particles', { position: p, bursts: [{ count: 80 }], speed: { min: 60, max: 220 }, gravity: 300 })`
+Limitations: `space`, `maxParticles`, `bursts`, `duration`, `look`, `aspect`, `stretch` and `blendMode` cannot change while running.
+
+**`particle-burst`.** The original one-shot burst of round particles.
+Required: `position`. Targets: position only.
+`fx.play('particle-burst', { position: fx.fromWindow({ x: e.nativeEvent.pageX, y: e.nativeEvent.pageY }), count: 60 })`
+Limitations: no target or `update()`; use `particles` for anything more.
+
+**`glow-border`, `energy-border`.** Outline effects around a target (soft glow; animated energy shader).
+Required: `target`. Targets: view, node.
+`fx.attach('buy-button', 'energy-border', { padding: 6, cornerRadius: 16, width: 5 })`
+Limitations: `energy-border` needs runtime shaders (without them it draws a solid-colour outline).
 
 ## 3. Particle system
 
@@ -162,7 +263,9 @@ const plasma = composeShader({
 engine.scene.createNode({ shape: { type: 'rect', width: 100, height: 100, fill: { type: 'shader', shader: plasma } } });
 ```
 
-Built on the primitives: `flameBorderShader` (the fire border: rising tongues, buoyant licks and its own halo), `flameBorderLiteShader` (the same flames with two noise octaves and no halo, used on `low`) and `displacementShader` (heat haze, used by the `distort` node effect). Phase 3's `energyShader` and `fireShader` remain. `fbm2` is a two-octave `fbm` for cheaper shaders.
+Shaders can sample images: declare `uniform shader image;` (`children: ['image']` in `defineShader` or `composeShader`) and give the fill `children: { image: { type: 'image', image, rect?, source? } }`. The image is stretched over `rect` (shader coordinates; default the whole shape) and transparent outside it. A fill whose image is not loaded draws nothing and the renderer warns once (`image-unavailable`). `burn-away` uses this for the picture it burns.
+
+Built on the primitives: `burnPaperShader`, `burnGlowShader` and `burnCharShader` (the `burn-away` effect, sharing the `burnField` chunk), `flameBorderShader` (the fire border: rising tongues, buoyant licks and its own halo), `flameBorderLiteShader` (the same flames with two noise octaves and no halo, used on `low`) and `displacementShader` (heat haze, used by the `distort` node effect). Phase 3's `energyShader` and `fireShader` remain. `fbm2` is a two-octave `fbm` for cheaper shaders.
 
 **How the fire border is drawn (Phase 4.5).** One shader rectangle per border, anchored to the target, covers the target plus a margin for the flames. Per pixel it takes the signed distance to the target's outline and the screen "up" direction in the target's own coordinates (`up`, updated from the target's rotation), so flames are tall above the target, short below it and lean on the sides, and keep rising on screen while the target turns. Tongues are fractal noise stretched along the outline and scrolled outward; a second, faster noise adds licks; a slow noise varies the height along the border; and a small breathing term varies the whole fire. Colors run from `tipColor` (dark red, transparent) through `color` to `coreColor` (near white) at the base. The halo is part of the same shader (no offscreen blur layer), and the card itself is never covered by it. Sparks are a separate world-space emitter, so they stay behind when the target moves.
 
@@ -321,7 +424,8 @@ A drawable that moves rigidly with its target (drawn in the target's frame every
 
 ## 10. Limitations
 
-- Effects are drawn around React Native views, never into them: no dissolve, distortion or recolouring of a view's own pixels (no view snapshots).
+- Effects are drawn around React Native views, never into them. The one exception is `burn-away`, which replaces the view with a picture of it (iOS and Android only; on the web it chars and fades the view instead). The picture is taken when the burn starts: changes to the view during the burn are not shown.
+- `burn-away` view snapshots have not been run on a device yet (the capture is React Native Skia's `makeImageFromView`; Jest replaces it with a CanvasKit image).
 - Transforms of a view that are not made through `motion` are not tracked by the engine (effects in the view's local layer still move with them, because they are part of the view).
 - Measurement (`measureInWindow`) is asynchronous: during scrolling, overlay-drawn effects (world-space particles, or targets with `effectsLayer="overlay"`) follow with a delay. Effects in a local layer do not.
 - A local layer is clipped by ancestors with `overflow: 'hidden'`; use `effectsLayer="overlay"` there.
@@ -329,5 +433,5 @@ A drawable that moves rigidly with its target (drawn in the target's frame every
 - Running emitters cannot change `space`, `maxParticles`, `bursts`, `duration`, `look`, `aspect`, `stretch` or `blendMode`; start a new emitter (a replacement `key` swaps it in one call).
 - All simulation and picture recording run on the JavaScript thread; Skia draws the picture on the UI thread. A busy JS thread delays effect frames (not the app's UI).
 - `distort` and `heatHaze` require runtime shaders; without them they are skipped.
-- Lightning, ice, dissolve and the other optional presets from the brief were not built.
+- Lightning, ice and the other optional presets from the brief were not built.
 - Nothing in this guide has been verified on iOS. The local effects layer has not been run on Android yet (see [PROGRESS.md](PROGRESS.md)).

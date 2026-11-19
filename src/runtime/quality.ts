@@ -23,6 +23,9 @@ export interface QualityProfile {
   readonly details: boolean;
 }
 
+/** The level an engine uses when no quality is given. */
+export const DEFAULT_QUALITY: QualityLevel = 'medium';
+
 export const QUALITY_PROFILES: Readonly<Record<QualityLevel, QualityProfile>> = {
   low: { level: 'low', particleScale: 0.35, shaders: true, shaderDetail: 'lite', glow: false, details: false },
   medium: { level: 'medium', particleScale: 0.65, shaders: true, shaderDetail: 'full', glow: false, details: true },

@@ -128,3 +128,65 @@ describe('target transform binding (TargetMotion)', () => {
     expect(() => engine.attach(handle, 'glow-border', {})).toThrow(/destroyed/);
   });
 });
+
+describe('concealing a target and taking its picture', () => {
+  it('multiplies the view opacity by every concealment, without touching node or motion', () => {
+    const { engine } = setup();
+    engine.targets.register('c');
+    engine.targets.updateWindowLayout('c', { x: 0, y: 0, width: 50, height: 70 });
+    const events: number[] = [];
+    engine.targets.on('conceal', (e) => events.push(e.opacity));
+    const node = engine.targets.node('c');
+    if (!node) throw new Error('node');
+    engine.targets.setLocalLayer('c', true);
+    expect(engine.targets.drawsLocally(node)).toBe(true);
+
+    const a = engine.targets.conceal('c', 0.5);
+    const b = engine.targets.conceal('c');
+    expect(engine.targets.concealOpacity('c')).toBe(0);
+    // Fully concealed: its local layer is hidden too, so the overlay draws its anchored effects.
+    expect(engine.targets.drawsLocally(node)).toBe(false);
+    b?.reveal();
+    b?.reveal();
+    expect(engine.targets.concealOpacity('c')).toBe(0.5);
+    expect(engine.targets.drawsLocally(node)).toBe(true);
+    if (a) a.opacity = 0.25;
+    expect(engine.targets.concealOpacity('c')).toBe(0.25);
+    expect(events).toEqual([0.5, 0, 0.5, 0.25]);
+    expect(node.opacity).toBe(1);
+    expect(engine.getTarget('c')?.motion.opacity).toBe(1);
+
+    // vanish: hidden for good through the motion, the concealment ends.
+    a?.vanish();
+    expect(a?.active).toBe(false);
+    expect(engine.targets.concealOpacity('c')).toBe(1);
+    expect(engine.targets.viewTransform('c')?.opacity).toBe(0);
+    expect(engine.targets.conceal('nope')).toBeNull();
+  });
+
+  it('ends concealments when the target unregisters', () => {
+    const { engine } = setup();
+    engine.targets.register('c');
+    const c = engine.targets.conceal('c');
+    engine.targets.unregister('c');
+    expect(c?.active).toBe(false);
+    expect(engine.targets.concealOpacity('c')).toBe(1);
+  });
+
+  it('asks the host for a picture only when it can take one', async () => {
+    const { engine } = setup();
+    engine.targets.register('c');
+    expect(engine.targets.canSnapshot('c')).toBe(false);
+    expect(engine.targets.snapshot('c')).toBeNull();
+    const picture = { native: 'img', width: 10, height: 10 };
+    engine.targets.setSnapshotter('c', () => Promise.resolve(picture));
+    expect(engine.targets.canSnapshot('c')).toBe(true);
+    await expect(engine.targets.snapshot('c')).resolves.toBe(picture);
+    engine.targets.setSnapshotter('c', () => {
+      throw new Error('view gone');
+    });
+    await expect(engine.targets.snapshot('c')).rejects.toThrow('view gone');
+    engine.targets.setSnapshotter('c', null);
+    expect(engine.targets.canSnapshot('c')).toBe(false);
+  });
+});

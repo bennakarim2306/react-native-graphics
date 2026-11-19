@@ -154,7 +154,9 @@ The engine describes **what** to draw in its own types; only `renderer/skia` tur
 
 **Transform binding (Phase 4).** Arbitrary transforms of a native view cannot be observed reliably, so the engine owns them instead: each target has a `TargetMotion` (`x`, `y`, `rotation`, `scale`, `opacity`) plus removable offsets (shakes). The registry places the proxy node at layout + motion and emits a `transform` event; `<GameFXTarget>` (an `Animated.View`) writes it into Reanimated shared values that prepend translate/rotate/scale to the view's own style transform and multiply its opacity. Because the same numbers drive the view and the proxy node, effects stay aligned with a moving, rotating, scaling view. Measurement is deferred while the binding is not at identity, so the stored layout is always untransformed. Tweens, keyframes, timelines and `motion.throw` animate `TargetMotion` like any animation target.
 
-Limits: measurement is asynchronous, so overlay-drawn effects (world-space particles, and everything with `effectsLayer="overlay"`) follow a scrolled or animated view with a delay; effects in the view's local layer do not (see the thread model). `trackEveryFrame` costs one `measureInWindow` per frame per target. Transforms applied to the view other than through its binding are not read, except that the local layer moves with them because it is part of the view. The view itself is never rendered by Skia. Effects that need the view's pixels (dissolve, distortion) would need a snapshot (`Skia.Image.MakeImageFromViewTag` exists) and are not implemented.
+Limits: measurement is asynchronous, so overlay-drawn effects (world-space particles, and everything with `effectsLayer="overlay"`) follow a scrolled or animated view with a delay; effects in the view's local layer do not (see the thread model). `trackEveryFrame` costs one `measureInWindow` per frame per target. Transforms applied to the view other than through its binding are not read, except that the local layer moves with them because it is part of the view. The view itself is never rendered by Skia, except as a picture.
+
+**Pictures and concealment (burn-away, 2026-11-17).** Two optional effect services let an effect replace a view by its picture. `snapshotTarget(node)` asks the host for a picture through a per-target snapshotter (`TargetRegistry.setSnapshotter`); `<GameFXTarget>` installs one on iOS and Android that hides its local layer, waits two frames and calls React Native Skia's `makeImageFromView`. The engine adds the picture to the asset manager as a retained image (`gamefx:snapshot:<id>:<n>`) and frees it when the effect releases it. `concealTarget(node, opacity)` multiplies the view's opacity (a separate shared value, so the transform binding is untouched) until the effect reveals it, or `vanish()`es it into `motion.opacity = 0`. While a target is fully concealed its effects draw in the overlay, because the local layer is inside the hidden view. The effect draws the picture in the overlay at the proxy node's world transform, so it follows the binding's motion. The web has no snapshotter, and an effect then needs its own fallback (burn-away chars the view and fades its concealment). Other pixel effects (dissolve, distortion) could build on the same services; none are implemented.
 
 ## Coordinate spaces
 
@@ -199,10 +201,20 @@ Details and examples: [EFFECTS.md](EFFECTS.md).
 
 ## Packaging and consumer contract
 
-- Native libraries (`react`, `react-native`, `@shopify/react-native-skia`, `react-native-reanimated`, `react-native-worklets`) become **peer dependencies**. The SDK does not bundle them.
-- Version baseline proposed from Expo SDK 58 (current on 2026-11-11): React Native 0.88.1, React 19.3.0, Reanimated 4.7.1, Worklets 0.13.0, Skia 2.14.0. Reanimated 4 requires the New Architecture.
-- A **separate example app** (`example/`) installs the SDK from the `npm pack` tarball and imports only `react-native-graphics`. CI packs the SDK, installs it into the example, type-checks it and bundles it for Android and iOS, so private paths cannot leak into the contract.
+- Native libraries (`react`, `react-native`, `@shopify/react-native-skia`, `react-native-reanimated`; `react-native-worklets` through Reanimated) are **peer dependencies**. The SDK has no runtime dependencies and no native code.
+- Peer ranges start at the versions that were tested (Expo SDK 58: React Native 0.88.1, React 19.3.0, Reanimated 4.7.1, Worklets 0.13.0, Skia 2.14.0). Reanimated 4 requires the New Architecture.
+- **Build (Phase 5):** `scripts/build.mjs` writes three trees from `src/`: `lib/module` (ES modules and source maps, compiled by `tsc` with full type-checking), `lib/commonjs` (each file transpiled on its own to CommonJS, for Node, Jest and `require`) and `lib/typescript` (declarations and declaration maps). `src/` ships without tests so the maps resolve. `exports` conditions: `types`, then `react-native`, `browser` and `module` (ES modules for Metro and bundlers), then `default` (CommonJS). Deep imports are blocked.
+- **Public surface:** `src/index.ts` and `src/core.ts` list their exports explicitly; `scripts/public-api.json` pins the names and is checked by Jest and by `npm run pack:verify`. Everything else is internal.
+- **Consumer contract:** two separate apps install the SDK from the `npm pack` tarball and import only the entry points: the showcase (`example/`, development tool) and the consumer test app (`consumer/`, installed outside the repository by `npm run consumer:install`, with an import-isolation check and a headless web smoke test). CI runs both, so private paths cannot leak into the contract.
 - Entry points: `react-native-graphics` (everything) and `react-native-graphics/core` (no React Native, React or Skia imports).
+- Versioning and release steps are in [RELEASE.md](RELEASE.md).
+
+## Lifecycle rules (Phase 5)
+
+- The provider owns one engine; unmounting it disposes everything.
+- A target that unmounts destroys its proxy node: attached effects drain and complete, sequences on it cancel, tweens and keyframes of its `motion` end with `targetDestroyed` on the next frame. Timelines are not ended by a destroyed object (they can involve other objects and cues).
+- `pauseInBackground` pauses the engine through `AppState` and resumes only what it paused.
+- `engine.stats` exposes the counters that leak tests compare (effects, playbacks, nodes, targets, local layers, frame loop, images).
 
 ## What carries over from the earlier card-SDK design
 

@@ -1,10 +1,22 @@
 import packageJson from '../package.json';
+import publicApi from '../scripts/public-api.json';
 import * as core from './core';
 import { SDK_VERSION } from './version';
 
 describe('package entry points', () => {
   it('exports a version that matches package.json', () => {
     expect(SDK_VERSION).toBe(packageJson.version);
+  });
+
+  it('exports exactly the public names listed in scripts/public-api.json from ./core', () => {
+    // A deliberate API change regenerates the list: node scripts/public-api.mjs --write
+    expect(Object.keys(core).sort()).toEqual(publicApi.core.values);
+  });
+
+  it('keeps internal helpers out of ./core', () => {
+    for (const internal of ['rethrowAsync', 'LocalTimer', 'ParticlePool', 'ParticleBuffers', 'createShapeSampler', 'resolveCurve', 'burnFront', 'BurnAwayInstance', 'FireBorderInstance']) {
+      expect(core).not.toHaveProperty(internal);
+    }
   });
 
   it('exposes the platform-independent engine from ./core', () => {
@@ -27,6 +39,7 @@ describe('package entry points', () => {
       'glow-pulse',
       'explosion',
       'victory',
+      'burn-away',
     ]);
   });
 

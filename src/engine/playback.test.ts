@@ -406,7 +406,7 @@ describe('Interruption', () => {
 });
 
 describe('Scene nodes during animation', () => {
-  it('removing a node keeps it animating; destroying it makes animations skip it safely', async () => {
+  it('removing a node keeps it animating; destroying it ends its animations without writing to it', async () => {
     const { clock, engine } = setup();
     const a = engine.scene.createNode();
     const b = engine.scene.createNode();
@@ -418,11 +418,45 @@ describe('Scene nodes during animation', () => {
     clock.advance(30);
     expect(a.x).toBe(60);
     expect(b.x).toBe(30);
+    expect(pb.status).toBe('cancelled');
     clock.advance(100);
     await expect(Promise.all([pa.finished, pb.finished])).resolves.toEqual([
       { status: 'completed' },
-      { status: 'completed' },
+      { status: 'cancelled', reason: 'targetDestroyed' },
     ]);
+  });
+
+  it('ends endless tweens and keyframes of a destroyed node, so the frame loop can stop', async () => {
+    const { clock, engine } = setup();
+    const node = engine.scene.createNode();
+    const spin = engine.animate(node, { rotation: 360, duration: 500, repeat: Infinity }).play();
+    const bob = engine
+      .keyframes(node, { duration: 400, repeat: Infinity, yoyo: true, keyframes: [{ at: 0, y: 0 }, { at: 1, y: 20 }] })
+      .play();
+    clock.advance(100);
+    node.destroy();
+    clock.advance(16);
+    await expect(Promise.all([spin.finished, bob.finished])).resolves.toEqual([
+      { status: 'cancelled', reason: 'targetDestroyed' },
+      { status: 'cancelled', reason: 'targetDestroyed' },
+    ]);
+    expect(engine.playbackCount).toBe(0);
+    clock.advance(16);
+    expect(clock.subscriberCount).toBe(0);
+  });
+
+  it('keeps a timeline running when one of its objects is destroyed (it ends by itself or by cancel)', async () => {
+    const { clock, engine } = setup();
+    const gone = engine.scene.createNode();
+    const stays = engine.scene.createNode();
+    const tl = engine.timeline();
+    tl.add(engine.animate(gone, { x: 100, duration: 100 }), 0).add(engine.animate(stays, { x: 100, duration: 200 }), 0);
+    const playback = tl.play();
+    clock.advance(50);
+    gone.destroy();
+    clock.advance(200);
+    expect(stays.x).toBe(100);
+    await expect(playback.finished).resolves.toEqual({ status: 'completed' });
   });
 
   it('animates children through their parent (hierarchical transforms)', () => {
