@@ -11,7 +11,7 @@
     "react-dom": "^19.3.0",
     "react-native": "0.88.1",
     "react-native-graphics": "file:vendor/react-native-graphics-0.1.0-rc.0.tgz",
-    "react-native-reanimated": "~4.7.1",
+    "react-native-reanimated": "4.7.1",
     "react-native-web": "^0.21.4",
     "react-native-worklets": "0.13.0"
   },

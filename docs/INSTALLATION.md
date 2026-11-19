@@ -52,6 +52,10 @@ npm install ./vendor/react-native-graphics-0.1.0-rc.0.tgz
   peer ranges above.
 - **Expo Go:** Expo Go for SDK 58 contains Skia, Reanimated and Worklets, so apps using this SDK
   run there without a native build. Verified on an Android 17 emulator with the showcase app.
+- **Expo Go needs the exact native versions.** Expo Go runs your JavaScript against its own
+  native Skia, Reanimated and Worklets. Install them with `npx expo install` and check with
+  `npx expo install --check`; a newer patch from `npm install` (for example Reanimated 4.7.2 instead
+  of 4.7.1) crashes at runtime (see TROUBLESHOOTING.md).
 - **Development builds** (`npx expo run:android`, `npx expo run:ios`, EAS Build) need nothing
   extra from this SDK; Skia and Reanimated are autolinked. Not run yet.
 - `babel-preset-expo` already includes the Worklets Babel plugin. No configuration is needed.

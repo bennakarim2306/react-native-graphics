@@ -48,6 +48,13 @@ jobs:
       # Packs the SDK and installs that exact tarball by path, so the lockfile's integrity
       # entry is refreshed for the new pack instead of failing with EINTEGRITY.
       - run: npm run example:install
+      # Expo Go runs the JavaScript of these modules against its own native code, so they must
+      # be exactly the versions Expo SDK 58 ships (a newer Reanimated patch crashes in Expo Go).
+      - run: npx expo install --check
+        working-directory: example
+        env:
+          CI: '1'
+          EXPO_OFFLINE: '1'
       - run: npm run typecheck
         working-directory: example
       - run: npx expo export --platform android --output-dir dist-android
@@ -78,6 +85,12 @@ jobs:
             consumer/package-lock.json
       - run: npm ci
       - run: npm run consumer:install -- "$CONSUMER_DIR"
+      # Native module versions must match what Expo Go for SDK 58 contains (see the example job).
+      - run: npx expo install --check
+        working-directory: ${{ env.CONSUMER_DIR }}
+        env:
+          CI: '1'
+          EXPO_OFFLINE: '1'
       - run: npm run typecheck
         working-directory: ${{ env.CONSUMER_DIR }}
       - run: npm run check:imports

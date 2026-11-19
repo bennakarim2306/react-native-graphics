@@ -37,6 +37,9 @@ Restart with a clean cache: `npx expo start --clear` (bare React Native:
 
 ## Runtime
 
+**Expo Go: `Uncaught Error: Cannot convert undefined value to object` in Reanimated's `PropsRegistryGarbageCollector.ts` (`unprocessSettledUpdate`)**
+The app's Reanimated JavaScript is newer than the native Reanimated inside Expo Go. Expo SDK 58's Expo Go contains Reanimated 4.7.1; with `"react-native-reanimated": "~4.7.1"` npm installed 4.7.2, whose JavaScript expects a newer native module. Expo's start screen hints at it ("1 package may need updating"). Fix: `npx expo install --check`, then `npx expo install --fix` (or pin the exact version Expo lists). The consumer and showcase apps pin `4.7.1` since 2026-11-19, and CI runs `npx expo install --check` for both. Development builds compile the native code from `node_modules` and do not have this mismatch.
+
 **`NotReadyError: GameFX is not ready yet`**
 An effect was started during the provider's very first render. Start effects from event handlers
 or `useEffect`, or check `fx.ready` first.
