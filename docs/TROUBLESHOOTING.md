@@ -54,10 +54,12 @@ The screen's views were measured while the screen slid in. Call `fx.remeasure()`
 navigator's `transitionEnd` event (see INSTALLATION.md section 5). Effects drawn inside a target
 (fire, glow, borders) are not affected.
 
-**Effects lag behind a view while a list scrolls**
-Overlay-drawn effects follow measured positions, and measuring is asynchronous. Call
-`fx.remeasure()` from `onScroll`, or let fixed effects draw in the target's local layer (the
-default `effectsLayer="local"`).
+**Explosions, sparks or confetti appear below (or above) their view after scrolling, or lag behind a view while a list scrolls**
+Overlay-drawn effects use the view's last measured window position, and scrolling moves views
+without a layout event, so that position is the one from before the scroll. Call `fx.remeasure()`
+from the scroll view's `onScroll` (with `scrollEventThrottle`), `onScrollEndDrag` and
+`onMomentumScrollEnd`, as the consumer app's `Screen` and the showcase do. Effects drawn in the
+target's local layer (fire, glow; the default `effectsLayer="local"`) are not affected.
 
 **Fire or glow is cut off at the edge of a container**
 The local layer is clipped by ancestors with `overflow: 'hidden'`. Use

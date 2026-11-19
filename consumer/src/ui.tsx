@@ -1,7 +1,9 @@
-// Plain React Native building blocks of this app. Nothing here knows about GameFX.
+// Plain React Native building blocks of this app. The only GameFX call: screens measure the
+// targets again when they scroll (see Screen).
 import type { ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { GestureResponderEvent, StyleProp, ViewStyle } from 'react-native';
+import { useGameFX } from 'react-native-graphics';
 
 export const colors = {
   page: '#F5F6FA',
@@ -15,8 +17,23 @@ export const colors = {
 };
 
 export function Screen({ children, testID }: { children: ReactNode; testID?: string }) {
+  const fx = useGameFX();
+  // Scrolling moves views without a layout event, so targets keep the window position they had
+  // before. Measuring them again keeps overlay-drawn effects (explosions, sparks, confetti) on
+  // their views. Effects drawn inside a view (fire, glow) do not need this.
+  const remeasure = () => {
+    if (fx.ready) fx.remeasure();
+  };
   return (
-    <ScrollView style={styles.page} contentContainerStyle={styles.pageContent} testID={testID}>
+    <ScrollView
+      style={styles.page}
+      contentContainerStyle={styles.pageContent}
+      testID={testID}
+      scrollEventThrottle={32}
+      onScroll={remeasure}
+      onScrollEndDrag={remeasure}
+      onMomentumScrollEnd={remeasure}
+    >
       {children}
     </ScrollView>
   );
