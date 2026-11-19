@@ -110,3 +110,39 @@ jobs:
           path: ${{ env.CONSUMER_DIR }}/web-smoke-out
           retention-days: 14
           if-no-files-found: ignore
+
+  windows:
+    # The owner develops on Windows. Runs the build, pack and install scripts there with Node,
+    # the repository and the consumer at paths that contain spaces (like C:\Program Files\nodejs),
+    # then type-checks the installed consumer. No bundles or smoke test: those run on Linux above.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sdk repo
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: sdk repo/.nvmrc
+          cache: npm
+          cache-dependency-path: |
+            sdk repo/package-lock.json
+            sdk repo/consumer/package-lock.json
+      - name: Move Node to a folder whose path contains a space
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'node js'
+          Copy-Item (Split-Path (Get-Command node).Source) $target -Recurse
+          Add-Content $env:GITHUB_PATH $target
+      - run: node -p process.execPath
+      - run: npm ci
+        working-directory: sdk repo
+      - run: npm run pack:verify
+        working-directory: sdk repo
+      - run: npm run consumer:install -- "$env:RUNNER_TEMP\gamefx consumer test"
+        working-directory: sdk repo
+      - run: npm run check:imports
+        working-directory: ${{ runner.temp }}\gamefx consumer test
+      - run: npm run typecheck
+        working-directory: ${{ runner.temp }}\gamefx consumer test
