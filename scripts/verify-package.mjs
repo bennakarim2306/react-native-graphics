@@ -10,7 +10,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
-import { join, posix } from 'node:path';
+import { basename, dirname, join, posix } from 'node:path';
 import { buildSdk, packSdk, repoRoot, run } from './sdk-pack.mjs';
 import { listExports } from './public-api.mjs';
 
@@ -72,7 +72,8 @@ const allowedBare = (spec) => {
   const name = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
   return peers.has(name);
 };
-run('tar', ['-xzf', tarball, '-C', join(work, 'pack')]);
+// A bare file name: GNU tar (Git for Windows) reads `C:\...` as a remote host, Windows' tar does not.
+run('tar', ['-xzf', basename(tarball)], { cwd: dirname(tarball) });
 const packageDir = join(work, 'pack', 'package');
 // TypeScript's pre-processor finds real imports, requires and dynamic imports (not comments).
 const ts = createRequire(import.meta.url)('typescript');
