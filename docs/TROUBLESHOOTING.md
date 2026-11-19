@@ -5,6 +5,9 @@ line so they also work in Windows PowerShell 5.
 
 ## Installation and bundling
 
+**`"C:\Program" is not recognized` (German: `Der Befehl "C:\Program" ist entweder falsch geschrieben`) from `npm run consumer:install`, `example:install` or `pack:verify` on Windows**
+The scripts used to start every command through `cmd.exe`, which split `C:\Program Files\nodejs\node.exe` at the space. Fixed on 2026-11-19 (commit a297427): update the branch (`git pull`) and run the command again. The `windows` CI job checks this with spaces in all paths.
+
 **`Unable to resolve module react-native-graphics/lib/...` or `.../src/...`**
 Deep imports are blocked by the package's `exports`. Import from `react-native-graphics` or
 `react-native-graphics/core`.

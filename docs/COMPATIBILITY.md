@@ -49,7 +49,7 @@ arbitrary native React Native projects, other native module versions, or release
 | Package manager | npm 10.9.9 | yarn, pnpm (pnpm's links may need Metro's `unstable_enableSymlinks`) |
 | JavaScript engine | Hermes (Expo Go Android, by the owner) | JSC |
 | Build mode | Development (Expo Go) | Release builds |
-| Host OS for scripts | Linux (CI and this environment) | Windows for `consumer:install`, `pack:verify` (the showcase install scripts have run on the owner's Windows PC) |
+| Host OS for scripts | Linux (CI and this environment); Windows Server 2025 in CI (`windows` job: `pack:verify`, `consumer:install`, consumer import check and type check, with Node, the repository and the consumer in folders whose paths contain spaces) | The owner's Windows PC after the fix of 2026-11-19 (before it, `consumer:install` failed there) |
 
 ## Known platform differences
 

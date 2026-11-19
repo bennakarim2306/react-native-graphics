@@ -53,7 +53,7 @@ lists the files without writing the archive. The archive is what apps install (s
 
 Before tagging or publishing anything:
 
-1. CI is green on the release commit (`check`, `example`, `consumer`).
+1. CI is green on the release commit (`check`, `example`, `consumer`, `windows`).
 2. `npm run check` passes locally, and `npm pack --dry-run` lists only `lib/`, `src/` (without
    tests), `README.md`, `CHANGELOG.md` and `package.json`.
 3. The consumer app, installed with `npm run consumer:install`, runs on an Android device or

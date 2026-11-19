@@ -31,7 +31,7 @@ Baseline: the starting commit (ceb064a, PR #4) passed `npm run check` with 39 su
 - **Other fixes:** `fx.quality` before ready reported `high` (default is `medium`); explicit `'worklet'` directives in `<GameFXTarget>`'s animated styles.
 - **Tests:** ten release lifecycle scenarios with real components (`lifecycle.test.tsx`), public API contract tests, a type-level API test (`apiTypes.test.tsx`).
 - **Consumer app** `gamefx-consumer-test` (`consumer/`, installed outside the repository by `scripts/install-consumer.mjs`): screens A to H, import-isolation check, headless web smoke test, benchmark screen for the nine brief scenarios.
-- **CI:** `check` job now ends with `pack:verify`; new `consumer` job (fresh tarball into the runner's temp folder, typecheck, import check, Android/iOS/web bundles, web smoke test with Playwright 1.63.0); npm cache per lockfile.
+- **CI:** `check` job now ends with `pack:verify`; new `consumer` job (fresh tarball into the runner's temp folder, typecheck, import check, Android/iOS/web bundles, web smoke test with Playwright 1.63.0); new `windows` job (`pack:verify` and `consumer:install` with spaces in every path, then the consumer's import check and type check); npm cache per lockfile.
 - **Docs:** README, INSTALLATION (new), API, EFFECTS (per-effect reference), COMPATIBILITY (new), PERFORMANCE, TESTING, TROUBLESHOOTING (new), RELEASE (new), ARCHITECTURE, CHANGELOG (new).
 
 ### Verification (Linux cloud container, Node 22.23.4, npm 10.9.9)
@@ -55,12 +55,13 @@ Baseline: the starting commit (ceb064a, PR #4) passed `npm run check` with 39 su
 | Secrets, `.env` files, network APIs, install scripts | None found. The only network use is Skia loading an image from a URL that the app itself registers |
 | GitHub Actions on PR #5 (run 44160173850, commit 533712b) | **All three jobs pass:** `check` (typecheck, lint, tests, `pack:verify`), `example` (showcase type check and bundles) and `consumer` (install from a fresh tarball outside the repository, import check, Android/iOS/web bundles, Playwright web smoke test) |
 | GitHub Actions, second run (44161270119, commit b63c24f) | `consumer` **failed**, 22 of 23: "E: sequence reaches the reward stage" saw `Done`. Cause: the reward stage is on screen for 150 ms and the test polled its text every 150 ms plus a browser round trip, so it could miss it. Reproduced with a probe that plays the sequence 25 times: the old check missed it 2 and 4 times in two runs. Fix: screen E records the path of stages (`sequence-path`) and the check reads it; the probe then found the path in order 25 of 25, and `npm run test:web` passed 23 of 23 |
+| Owner's Windows PC, `npm run consumer:install` (2026-11-19) | **Failed:** `"C:\Program" is not recognized`. Cause: `scripts/sdk-pack.mjs` ran every command with `shell: true` on Windows, and `cmd.exe` split `C:\Program Files\nodejs\node.exe` at the space (`example:install` and `pack:verify` were affected too). Reproduced by a new `windows` CI job with Node, the repository and the consumer in folders with spaces (run 44504292992, commit 3df1625: same error). Fix (commit a297427): Node and tar start without a shell, npm runs through `npm_execpath` with the same Node (or `cmd.exe` with quoted arguments outside `npm run`), and `pack:verify` extracts the tarball by file name. Then the `windows` job passed (run 44504591590: `pack:verify`, `consumer:install`, import check, type check), as did the Linux jobs, and on Linux `pack:verify` with Node in a folder with a space and `consumer:install` into a folder with spaces |
 
 ### Not verified
 
 - The consumer app on Android (Expo Go on the owner's emulator) and on iOS.
 - Device performance: no FPS, frame-time, memory or CPU numbers from a phone or emulator. This container has no Android emulator (no KVM, no Android SDK).
-- Bare React Native, development builds, release builds, other package managers, Windows for the new scripts.
+- Bare React Native, development builds, release builds, other package managers.
 
 ### Release blockers (for publishing, not for reviewing the candidate)
 
